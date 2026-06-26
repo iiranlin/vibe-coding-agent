@@ -146,8 +146,6 @@ type ChatStreamEvent =
 type Locale = 'zh' | 'en';
 
 const LANGUAGE_STORAGE_KEY = 'web-dev-agent-language';
-const EDGEONE_AI_DEPLOY_URL = 'https://edgeone.ai/makers/new?template=vibe-coding-agent&from=within&fromAgent=1&agentLang=typescript';
-const TENCENT_CLOUD_DEPLOY_URL = 'https://console.cloud.tencent.com/edgeone/makers/new?template=vibe-coding-agent&from=within&fromAgent=1&agentLang=typescript';
 const PHASE_ORDER: NormalizedStepPhase[] = ['scaffold', 'modify', 'code', 'install', 'preview', 'link'];
 const TYPEWRITER_INTERVAL_MS = 18;
 const TYPEWRITER_CHARS_PER_TICK = 3;
@@ -159,7 +157,6 @@ const TRANSLATIONS = {
   zh: {
     languageToggleLabel: 'English',
     languageToggleAria: 'Switch language to English',
-    deployLabel: '一键部署',
     home: {
       titleBefore: '今天想',
       titleAccent: '创建',
@@ -266,7 +263,6 @@ const TRANSLATIONS = {
   en: {
     languageToggleLabel: '中文',
     languageToggleAria: '切换语言为中文',
-    deployLabel: 'Deploy',
     home: {
       titleBefore: 'What will you',
       titleAccent: 'create',
@@ -384,28 +380,6 @@ function createConversationId() {
     : `conversation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function extractProjectName() {
-  if (typeof window === 'undefined') {
-    return {
-      projectName: '',
-      domain: '',
-    };
-  }
-
-  var fullUrl = window.location.href;
-  var urlObject = new URL(fullUrl);
-  var hostname = urlObject.hostname;
-  var parts = hostname.split('.');
-  return {
-    projectName: parts[0].replace('-zh', ''),
-    domain: parts.slice(1).join('.'),
-  };
-}
-
-function getDeployUrl(domain: string) {
-  return domain === 'edgeone.dev' ? EDGEONE_AI_DEPLOY_URL : TENCENT_CLOUD_DEPLOY_URL;
-}
-
 function getOrCreateCachedConversationId() {
   if (typeof window === 'undefined') {
     return createConversationId();
@@ -462,7 +436,6 @@ function getAssistantScrollSignature(message: ChatMessage) {
 
 export default function Home() {
   const [language, setLanguage] = useState<Locale>('zh');
-  const [deployUrl, setDeployUrl] = useState(TENCENT_CLOUD_DEPLOY_URL);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -497,10 +470,6 @@ export default function Home() {
   const latestAssistantScrollSignature = latestAssistantMessage
     ? getAssistantScrollSignature(latestAssistantMessage)
     : '';
-  useEffect(() => {
-    const { domain } = extractProjectName();
-    setDeployUrl(getDeployUrl(domain));
-  }, []);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
@@ -991,14 +960,6 @@ export default function Home() {
             <span className="truncate">Coding Agent Starter</span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <a
-              href={deployUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-full bg-[#45b98e] px-3.5 py-1.5 text-xs font-semibold text-black shadow-lg shadow-[#45b98e]/20 transition hover:bg-[#56c99f] sm:px-4"
-            >
-              {t.deployLabel}
-            </a>
             <button
               type="button"
               onClick={() => setLanguage((current) => (current === 'zh' ? 'en' : 'zh'))}
