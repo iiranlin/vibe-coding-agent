@@ -4,6 +4,7 @@ import {
   type SDKMessage,
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { extractUsageTokens } from '../lib/usage';
 import {
   DEFAULT_MODEL,
   DEFAULT_PATH,
@@ -34,6 +35,16 @@ import {
   truncateForStream,
 } from './utils/_text';
 import { debugLog, isDebugEnabled } from './utils/_debug';
+
+function buildUsageResultFields(resultMessage: SDKResultMessage) {
+  return {
+    usageTokens: extractUsageTokens(resultMessage as any),
+    usage: (resultMessage as any).usage,
+    modelUsage: (resultMessage as any).modelUsage,
+    totalCostUsd: Number((resultMessage as any).total_cost_usd || 0),
+    numTurns: Number((resultMessage as any).num_turns || 0),
+  };
+}
 
 function pickEnvValue(context: any, key: string) {
   const value = context?.env?.[key];
@@ -724,6 +735,7 @@ export async function runCodingAgent(
         projectTouched,
         previewTouched,
         wasCreated,
+        ...buildUsageResultFields(resultMessage),
       };
     }
 
@@ -734,6 +746,7 @@ export async function runCodingAgent(
       projectTouched,
       previewTouched,
       wasCreated,
+      ...buildUsageResultFields(resultMessage),
     };
   } catch(e) {
     console.error(e);

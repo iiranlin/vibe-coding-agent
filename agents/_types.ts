@@ -30,6 +30,11 @@ export type CodingAgentResult = {
   previewTouched?: boolean;
   wasCreated: boolean;
   fatal?: boolean;
+  usageTokens?: number;
+  usage?: unknown;
+  modelUsage?: Record<string, unknown>;
+  totalCostUsd?: number;
+  numTurns?: number;
 };
 
 export type BuildResult = {
