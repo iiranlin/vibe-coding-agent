@@ -373,6 +373,122 @@ async function importKey(key, algorithm, keyUsage) {
       algorithm.name,`;
   const patchedVerifyAlgorithm = `    const verified = await runtime.crypto.subtle.verify(
       { name: algorithm.name },`;
+  const originalHasValidSignature = `async function hasValidSignature(jwt, key) {
+  const { header, signature, raw } = jwt;
+  const encoder = new TextEncoder();
+  const data = encoder.encode([raw.header, raw.payload].join("."));
+  const algorithm = getCryptoAlgorithm(header.alg);
+  try {
+    const cryptoKey = await importKey(key, algorithm, "verify");
+    const verified = await runtime.crypto.subtle.verify(
+      { name: algorithm.name },
+      cryptoKey,
+      signature,
+      data
+    );
+    return { data: verified };
+  } catch (error) {
+    return {
+      errors: [
+        new TokenVerificationError({
+          reason: TokenVerificationErrorReason.TokenInvalidSignature,
+          message: error?.message
+        })
+      ]
+    };
+  }
+}`;
+  const patchedHasValidSignature = `function edgeOneBytesToBigInt(bytes) {
+  let value = 0n;
+  for (const byte of bytes) value = value << 8n | BigInt(byte);
+  return value;
+}
+function edgeOneBigIntToBytes(value, length) {
+  const bytes = new Uint8Array(length);
+  for (let index = length - 1; index >= 0; index--) {
+    bytes[index] = Number(value & 255n);
+    value >>= 8n;
+  }
+  return bytes;
+}
+function edgeOneModPow(base, exponent, modulus) {
+  let result = 1n;
+  base %= modulus;
+  while (exponent > 0n) {
+    if (exponent & 1n) result = result * base % modulus;
+    exponent >>= 1n;
+    base = base * base % modulus;
+  }
+  return result;
+}
+async function verifyEdgeOneRs256(jwt, key, data) {
+  if (jwt.header.alg !== "RS256" || typeof key !== "object" || key?.kty !== "RSA" || !key?.n || !key?.e) {
+    return void 0;
+  }
+  const modulusBytes = base64url.parse(key.n, { loose: true });
+  const exponentBytes = base64url.parse(key.e, { loose: true });
+  const modulus = edgeOneBytesToBigInt(modulusBytes);
+  const exponent = edgeOneBytesToBigInt(exponentBytes);
+  const signatureValue = edgeOneBytesToBigInt(jwt.signature);
+  if (signatureValue >= modulus) return false;
+  const encoded = edgeOneBigIntToBytes(
+    edgeOneModPow(signatureValue, exponent, modulus),
+    modulusBytes.length
+  );
+  const digest = new Uint8Array(await runtime.crypto.subtle.digest({ name: "SHA-256" }, data));
+  const digestInfoPrefix = new Uint8Array([
+    0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
+    0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20
+  ]);
+  const separatorIndex = encoded.length - digestInfoPrefix.length - digest.length - 1;
+  if (separatorIndex < 10 || encoded[0] !== 0 || encoded[1] !== 1 || encoded[separatorIndex] !== 0) {
+    return false;
+  }
+  for (let index = 2; index < separatorIndex; index++) {
+    if (encoded[index] !== 255) return false;
+  }
+  let difference = 0;
+  for (let index = 0; index < digestInfoPrefix.length; index++) {
+    difference |= encoded[separatorIndex + 1 + index] ^ digestInfoPrefix[index];
+  }
+  const digestOffset = separatorIndex + 1 + digestInfoPrefix.length;
+  for (let index = 0; index < digest.length; index++) {
+    difference |= encoded[digestOffset + index] ^ digest[index];
+  }
+  return difference === 0;
+}
+async function hasValidSignature(jwt, key) {
+  const { header, signature, raw } = jwt;
+  const encoder = new TextEncoder();
+  const data = encoder.encode([raw.header, raw.payload].join("."));
+  const algorithm = getCryptoAlgorithm(header.alg);
+  try {
+    const cryptoKey = await importKey(key, algorithm, "verify");
+    const verified = await runtime.crypto.subtle.verify(
+      { name: algorithm.name },
+      cryptoKey,
+      signature,
+      data
+    );
+    return { data: verified };
+  } catch (error) {
+    if (error?.message === "Param Invalid") {
+      try {
+        const verified = await verifyEdgeOneRs256(jwt, key, data);
+        if (typeof verified === "boolean") return { data: verified };
+      } catch {
+      }
+    }
+    return {
+      errors: [
+        new TokenVerificationError({
+          reason: TokenVerificationErrorReason.TokenInvalidSignature,
+          message: error?.message
+        })
+      ]
+    };
+  }
+}`;
   let changed = false;
 
   for (const clerkBackendRuntimePath of [
@@ -394,6 +510,15 @@ async function importKey(key, algorithm, keyUsage) {
       originalVerifyAlgorithm,
       patchedVerifyAlgorithm,
       `${clerkBackendRuntimePath} Clerk JWT verify EdgeOne params`,
+    );
+    source = result.source;
+    fileChanged ||= result.changed;
+
+    result = replaceOnce(
+      source,
+      originalHasValidSignature,
+      patchedHasValidSignature,
+      `${clerkBackendRuntimePath} Clerk JWT EdgeOne RS256 verifier`,
     );
     source = result.source;
     fileChanged ||= result.changed;

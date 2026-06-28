@@ -197,6 +197,74 @@ describe('EdgeOne NextRequest 适配', () => {
     }
   });
 
+  it('在 EdgeOne RSA WebCrypto 持续失败时验证真实 RS256 签名', async () => {
+    const clerkJwt = await import(
+      `${pathToFileURL(clerkBackendEsmRuntimePath).href}?edgeone-rsa-fallback`
+    );
+    const mutableRuntime = clerkJwt.runtime as { crypto: unknown };
+    const originalCrypto = mutableRuntime.crypto;
+    const nativeSubtle = globalThis.crypto.subtle;
+    const keyPair = await nativeSubtle.generateKey(
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: 'SHA-256',
+      },
+      true,
+      ['sign', 'verify'],
+    );
+    const publicJwk = await nativeSubtle.exportKey('jwk', keyPair.publicKey);
+    const rawHeader = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString(
+      'base64url',
+    );
+    const rawPayload = Buffer.from(JSON.stringify({ sub: 'user_test' })).toString('base64url');
+    const data = new TextEncoder().encode(`${rawHeader}.${rawPayload}`);
+    const signature = new Uint8Array(
+      await nativeSubtle.sign('RSASSA-PKCS1-v1_5', keyPair.privateKey, data),
+    );
+
+    mutableRuntime.crypto = {
+      subtle: {
+        async importKey() {
+          throw new Error('Param Invalid');
+        },
+        async verify() {
+          throw new Error('Param Invalid');
+        },
+        digest: nativeSubtle.digest.bind(nativeSubtle),
+      },
+    };
+
+    try {
+      const result = await clerkJwt.hasValidSignature(
+        {
+          header: { alg: 'RS256' },
+          signature,
+          raw: { header: rawHeader, payload: rawPayload },
+        },
+        publicJwk,
+      );
+
+      expect(result).toEqual({ data: true });
+
+      const tamperedSignature = signature.slice();
+      tamperedSignature[0] ^= 1;
+      const tamperedResult = await clerkJwt.hasValidSignature(
+        {
+          header: { alg: 'RS256' },
+          signature: tamperedSignature,
+          raw: { header: rawHeader, payload: rawPayload },
+        },
+        publicJwk,
+      );
+
+      expect(tamperedResult).toEqual({ data: false });
+    } finally {
+      mutableRuntime.crypto = originalCrypto;
+    }
+  });
+
   it('避免 Clerk keyless helper 直接读取裸 crypto.subtle', () => {
     for (const clerkKeylessPath of clerkKeylessPaths) {
       const clerkKeylessSource = readFileSync(clerkKeylessPath, 'utf8');
