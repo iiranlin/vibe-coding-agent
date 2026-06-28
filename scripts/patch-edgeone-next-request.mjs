@@ -22,6 +22,10 @@ const clerkKeylessPaths = {
   cjs: resolve(process.cwd(), 'node_modules/@clerk/nextjs/dist/cjs/server/keyless.js'),
   esm: resolve(process.cwd(), 'node_modules/@clerk/nextjs/dist/esm/server/keyless.js'),
 };
+const clerkSharedKeyPaths = {
+  cjs: resolve(process.cwd(), 'node_modules/@clerk/shared/dist/keys.js'),
+  esm: resolve(process.cwd(), 'node_modules/@clerk/shared/dist/keys.mjs'),
+};
 
 function replaceOnce(source, original, patched, label) {
   if (source.includes(patched)) return { source, changed: false };
@@ -201,7 +205,7 @@ function patchCryptoPolyfill() {
   const originalCryptoDeclaration = `const crypto = globalThis.crypto || {};
 
 // \\u786E\\u4FDD getRandomValues \\u53EF\\u7528`;
-  const legacyPatchedCryptoDeclaration = `const crypto = globalThis.crypto || {};
+  const patchedCryptoDeclaration = `const crypto = globalThis.crypto || {};
 
 if (!crypto.subtle) {
   const nodeCrypto = (() => {
@@ -246,303 +250,167 @@ if (!crypto.subtle) {
 }
 
 // \\u786E\\u4FDD getRandomValues \\u53EF\\u7528`;
-  const patchedCryptoDeclaration = `let crypto = globalThis.crypto || {};
 
-const normalizeAlgorithm = (algorithm) => {
-  const name = typeof algorithm === 'string'
-    ? algorithm
-    : algorithm?.name || algorithm?.hash?.name || algorithm?.hash;
-  return String(name).toLowerCase().replace(/[-_]/g, '');
-};
-const toUint8Array = (data) => {
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView?.(data)) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
-  if (typeof data === 'string') return new TextEncoder().encode(data);
-  return new Uint8Array(data || []);
-};
-const toArrayBuffer = (bytes) => (
-  bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-);
-const concatBytes = (...parts) => {
-  const normalized = parts.map(toUint8Array);
-  const total = normalized.reduce((sum, part) => sum + part.length, 0);
-  const output = new Uint8Array(total);
-  let offset = 0;
-  for (const part of normalized) {
-    output.set(part, offset);
-    offset += part.length;
-  }
-  return output;
-};
-const writeUint32BE = (target, offset, value) => {
-  target[offset] = value >>> 24;
-  target[offset + 1] = value >>> 16;
-  target[offset + 2] = value >>> 8;
-  target[offset + 3] = value;
-};
-const readUint32BE = (source, offset) => (
-  ((source[offset] << 24) | (source[offset + 1] << 16) | (source[offset + 2] << 8) | source[offset + 3]) >>> 0
-);
-const rotateLeft = (value, bits) => ((value << bits) | (value >>> (32 - bits))) >>> 0;
-const rotateRight = (value, bits) => ((value >>> bits) | (value << (32 - bits))) >>> 0;
-const padMessage = (message) => {
-  const bytes = toUint8Array(message);
-  const bitLength = bytes.length * 8;
-  const paddedLength = Math.ceil((bytes.length + 1 + 8) / 64) * 64;
-  const padded = new Uint8Array(paddedLength);
-  padded.set(bytes);
-  padded[bytes.length] = 0x80;
-  writeUint32BE(padded, paddedLength - 8, Math.floor(bitLength / 0x100000000));
-  writeUint32BE(padded, paddedLength - 4, bitLength >>> 0);
-  return padded;
-};
-const hashSha1 = (message) => {
-  const padded = padMessage(message);
-  let h0 = 0x67452301;
-  let h1 = 0xefcdab89;
-  let h2 = 0x98badcfe;
-  let h3 = 0x10325476;
-  let h4 = 0xc3d2e1f0;
-  const w = new Uint32Array(80);
-  for (let offset = 0; offset < padded.length; offset += 64) {
-    for (let i = 0; i < 16; i++) {
-      w[i] = readUint32BE(padded, offset + i * 4);
-    }
-    for (let i = 16; i < 80; i++) {
-      w[i] = rotateLeft(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    }
-    let a = h0;
-    let b = h1;
-    let c = h2;
-    let d = h3;
-    let e = h4;
-    for (let i = 0; i < 80; i++) {
-      let f;
-      let k;
-      if (i < 20) {
-        f = (b & c) | (~b & d);
-        k = 0x5a827999;
-      } else if (i < 40) {
-        f = b ^ c ^ d;
-        k = 0x6ed9eba1;
-      } else if (i < 60) {
-        f = (b & c) | (b & d) | (c & d);
-        k = 0x8f1bbcdc;
-      } else {
-        f = b ^ c ^ d;
-        k = 0xca62c1d6;
-      }
-      const temp = (rotateLeft(a, 5) + f + e + k + w[i]) >>> 0;
-      e = d;
-      d = c;
-      c = rotateLeft(b, 30);
-      b = a;
-      a = temp;
-    }
-    h0 = (h0 + a) >>> 0;
-    h1 = (h1 + b) >>> 0;
-    h2 = (h2 + c) >>> 0;
-    h3 = (h3 + d) >>> 0;
-    h4 = (h4 + e) >>> 0;
-  }
-  const output = new Uint8Array(20);
-  [h0, h1, h2, h3, h4].forEach((value, index) => writeUint32BE(output, index * 4, value));
-  return output;
-};
-const sha256K = [
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-];
-const hashSha256 = (message) => {
-  const padded = padMessage(message);
-  let h0 = 0x6a09e667;
-  let h1 = 0xbb67ae85;
-  let h2 = 0x3c6ef372;
-  let h3 = 0xa54ff53a;
-  let h4 = 0x510e527f;
-  let h5 = 0x9b05688c;
-  let h6 = 0x1f83d9ab;
-  let h7 = 0x5be0cd19;
-  const w = new Uint32Array(64);
-  for (let offset = 0; offset < padded.length; offset += 64) {
-    for (let i = 0; i < 16; i++) {
-      w[i] = readUint32BE(padded, offset + i * 4);
-    }
-    for (let i = 16; i < 64; i++) {
-      const s0 = rotateRight(w[i - 15], 7) ^ rotateRight(w[i - 15], 18) ^ (w[i - 15] >>> 3);
-      const s1 = rotateRight(w[i - 2], 17) ^ rotateRight(w[i - 2], 19) ^ (w[i - 2] >>> 10);
-      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
-    }
-    let a = h0;
-    let b = h1;
-    let c = h2;
-    let d = h3;
-    let e = h4;
-    let f = h5;
-    let g = h6;
-    let h = h7;
-    for (let i = 0; i < 64; i++) {
-      const s1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
-      const ch = (e & f) ^ (~e & g);
-      const temp1 = (h + s1 + ch + sha256K[i] + w[i]) >>> 0;
-      const s0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
-      const maj = (a & b) ^ (a & c) ^ (b & c);
-      const temp2 = (s0 + maj) >>> 0;
-      h = g;
-      g = f;
-      f = e;
-      e = (d + temp1) >>> 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (temp1 + temp2) >>> 0;
-    }
-    h0 = (h0 + a) >>> 0;
-    h1 = (h1 + b) >>> 0;
-    h2 = (h2 + c) >>> 0;
-    h3 = (h3 + d) >>> 0;
-    h4 = (h4 + e) >>> 0;
-    h5 = (h5 + f) >>> 0;
-    h6 = (h6 + g) >>> 0;
-    h7 = (h7 + h) >>> 0;
-  }
-  const output = new Uint8Array(32);
-  [h0, h1, h2, h3, h4, h5, h6, h7].forEach((value, index) => writeUint32BE(output, index * 4, value));
-  return output;
-};
-const digestBytes = (algorithm, data) => {
-  const algorithmName = normalizeAlgorithm(algorithm);
-  if (algorithmName === 'sha1') return hashSha1(data);
-  if (algorithmName === 'sha256') return hashSha256(data);
-  throw new Error('Unsupported crypto.subtle algorithm: ' + algorithmName);
-};
-const createFallbackSubtle = () => ({
-  async digest(algorithm, data) {
-    return toArrayBuffer(digestBytes(algorithm, data));
-  },
-  async importKey(format, keyData, algorithm, extractable, keyUsages) {
-    return { format, keyData: toUint8Array(keyData), algorithm, extractable, keyUsages };
-  },
-  async sign(algorithm, key, data) {
-    const algorithmName = normalizeAlgorithm(algorithm);
-    if (algorithmName !== 'hmac') {
-      throw new Error('Unsupported crypto.subtle sign algorithm: ' + algorithmName);
-    }
-    const hashAlgorithm = key.algorithm?.hash || algorithm.hash || 'SHA-256';
-    const hashName = normalizeAlgorithm(hashAlgorithm);
-    const blockSize = 64;
-    let keyBytes = toUint8Array(key.keyData);
-    if (keyBytes.length > blockSize) keyBytes = digestBytes(hashName, keyBytes);
-    const normalizedKey = new Uint8Array(blockSize);
-    normalizedKey.set(keyBytes);
-    const ipad = new Uint8Array(blockSize);
-    const opad = new Uint8Array(blockSize);
-    for (let i = 0; i < blockSize; i++) {
-      ipad[i] = normalizedKey[i] ^ 0x36;
-      opad[i] = normalizedKey[i] ^ 0x5c;
-    }
-    const inner = digestBytes(hashName, concatBytes(ipad, data));
-    return toArrayBuffer(digestBytes(hashName, concatBytes(opad, inner)));
-  },
-  async verify(algorithm, key, signature, data) {
-    const expected = new Uint8Array(await this.sign(algorithm, key, data));
-    const actual = toUint8Array(signature);
-    if (expected.length !== actual.length) return false;
-    let diff = 0;
-    for (let i = 0; i < expected.length; i++) diff |= expected[i] ^ actual[i];
-    return diff === 0;
-  }
-});
-const setCryptoSubtle = (subtle) => {
-  try {
-    crypto.subtle = subtle;
-  } catch {}
-  if (!crypto.subtle) {
-    crypto = { ...crypto, subtle };
-  }
-};
-const installCryptoGlobal = () => {
-  try {
-    Object.defineProperty(globalThis, 'crypto', {
-      value: crypto,
-      configurable: true,
-      enumerable: false,
-      writable: true
-    });
-  } catch {}
-  try {
-    if (!globalThis.crypto) globalThis.crypto = crypto;
-  } catch {}
-};
-
-if (!crypto.subtle) {
-  const nodeCrypto = (() => {
-    try {
-      return require('node:crypto');
-    } catch {
-      return undefined;
-    }
-  })();
-
-  if (nodeCrypto?.webcrypto?.subtle) {
-    setCryptoSubtle(nodeCrypto.webcrypto.subtle);
-  } else if (nodeCrypto?.createHash && nodeCrypto?.createHmac) {
-    setCryptoSubtle({
-      async digest(algorithm, data) {
-        const hash = nodeCrypto.createHash(normalizeAlgorithm(algorithm));
-        hash.update(Buffer.from(data));
-        return toArrayBuffer(hash.digest());
-      },
-      async importKey(format, keyData, algorithm) {
-        return { format, keyData, algorithm };
-      },
-      async sign(algorithm, key, data) {
-        const hmac = nodeCrypto.createHmac(
-          normalizeAlgorithm(key.algorithm?.hash || algorithm),
-          Buffer.from(key.keyData),
-        );
-        hmac.update(Buffer.from(data));
-        return toArrayBuffer(hmac.digest());
-      }
-    });
-  } else {
-    setCryptoSubtle(createFallbackSubtle());
-  }
-}
-
-installCryptoGlobal();
-
-// \\u786E\\u4FDD getRandomValues \\u53EF\\u7528`;
-
-  if (source.includes(patchedCryptoDeclaration)) {
+  if (source.includes(patchedCryptoDeclaration) && !source.includes('createFallbackSubtle')) {
     return false;
   }
 
-  let changed = false;
-  if (source.includes(legacyPatchedCryptoDeclaration)) {
-    source = source.replace(legacyPatchedCryptoDeclaration, patchedCryptoDeclaration);
-    changed = true;
-  } else {
-    const result = replaceOnce(
-      source,
-      originalCryptoDeclaration,
-      patchedCryptoDeclaration,
-      `${cryptoPolyfillPath} Web Crypto subtle fallback`,
-    );
-    source = result.source;
-    changed = result.changed;
+  if (source.includes('createFallbackSubtle')) {
+    const startIndex = source.indexOf('let crypto = globalThis.crypto || {};');
+    const endMarker = '// \\u786E\\u4FDD getRandomValues \\u53EF\\u7528';
+    const endIndex = source.indexOf(endMarker, startIndex);
+    if (startIndex === -1 || endIndex === -1) {
+      throw new Error(
+        `Unsupported @edgeone/opennextjs-pages ${cryptoPolyfillPath} oversized crypto fallback migration target.`,
+      );
+    }
+    source = source.slice(0, startIndex) + patchedCryptoDeclaration + source.slice(endIndex + endMarker.length);
+    return writeIfChanged(cryptoPolyfillPath, source, true);
   }
 
-  return writeIfChanged(cryptoPolyfillPath, source, changed);
+  const result = replaceOnce(
+    source,
+    originalCryptoDeclaration,
+    patchedCryptoDeclaration,
+    `${cryptoPolyfillPath} Web Crypto subtle fallback`,
+  );
+  source = result.source;
+  return writeIfChanged(cryptoPolyfillPath, source, result.changed);
+}
+
+function patchClerkBackendCookieSuffix() {
+  let changed = false;
+
+  for (const clerkBackendRequestPath of clerkBackendRequestPaths) {
+    let source = readFileSync(clerkBackendRequestPath, 'utf8');
+    const result = replaceOnce(
+      source,
+      'runtime.crypto.subtle) : "";',
+      'runtime.crypto?.subtle) : "";',
+      `${clerkBackendRequestPath} Clerk cookie suffix optional subtle`,
+    );
+    source = result.source;
+    changed = writeIfChanged(clerkBackendRequestPath, source, result.changed) || changed;
+  }
+
+  return changed;
+}
+
+function patchClerkSharedKeys() {
+  const fallbackSha1 = `function fallbackSha1(data) {
+\tconst bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+\tconst bitLength = bytes.length * 8;
+\tconst paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
+\tconst padded = new Uint8Array(paddedLength);
+\tpadded.set(bytes);
+\tpadded[bytes.length] = 0x80;
+\tconst writeUint32 = (offset, value) => {
+\t\tpadded[offset] = value >>> 24;
+\t\tpadded[offset + 1] = value >>> 16;
+\t\tpadded[offset + 2] = value >>> 8;
+\t\tpadded[offset + 3] = value;
+\t};
+\tconst readUint32 = (offset) => (padded[offset] << 24 | padded[offset + 1] << 16 | padded[offset + 2] << 8 | padded[offset + 3]) >>> 0;
+\tconst rotateLeft = (value, bits) => (value << bits | value >>> 32 - bits) >>> 0;
+\twriteUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000));
+\twriteUint32(paddedLength - 4, bitLength >>> 0);
+\tlet h0 = 0x67452301;
+\tlet h1 = 0xefcdab89;
+\tlet h2 = 0x98badcfe;
+\tlet h3 = 0x10325476;
+\tlet h4 = 0xc3d2e1f0;
+\tconst w = new Uint32Array(80);
+\tfor (let offset = 0; offset < padded.length; offset += 64) {
+\t\tfor (let i = 0; i < 16; i++) w[i] = readUint32(offset + i * 4);
+\t\tfor (let i = 16; i < 80; i++) w[i] = rotateLeft(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+\t\tlet a = h0, b = h1, c = h2, d = h3, e = h4;
+\t\tfor (let i = 0; i < 80; i++) {
+\t\t\tlet f, k;
+\t\t\tif (i < 20) {
+\t\t\t\tf = b & c | ~b & d;
+\t\t\t\tk = 0x5a827999;
+\t\t\t} else if (i < 40) {
+\t\t\t\tf = b ^ c ^ d;
+\t\t\t\tk = 0x6ed9eba1;
+\t\t\t} else if (i < 60) {
+\t\t\t\tf = b & c | b & d | c & d;
+\t\t\t\tk = 0x8f1bbcdc;
+\t\t\t} else {
+\t\t\t\tf = b ^ c ^ d;
+\t\t\t\tk = 0xca62c1d6;
+\t\t\t}
+\t\t\tconst temp = (rotateLeft(a, 5) + f + e + k + w[i]) >>> 0;
+\t\t\te = d;
+\t\t\td = c;
+\t\t\tc = rotateLeft(b, 30);
+\t\t\tb = a;
+\t\t\ta = temp;
+\t\t}
+\t\th0 = h0 + a >>> 0;
+\t\th1 = h1 + b >>> 0;
+\t\th2 = h2 + c >>> 0;
+\t\th3 = h3 + d >>> 0;
+\t\th4 = h4 + e >>> 0;
+\t}
+\tconst output = new Uint8Array(20);
+\t[h0, h1, h2, h3, h4].forEach((value, index) => {
+\t\toutput[index * 4] = value >>> 24;
+\t\toutput[index * 4 + 1] = value >>> 16;
+\t\toutput[index * 4 + 2] = value >>> 8;
+\t\toutput[index * 4 + 3] = value;
+\t});
+\treturn output.buffer;
+}`;
+  const originalCjsGetCookieSuffix = `async function getCookieSuffix(publishableKey, subtle = globalThis.crypto.subtle) {
+\tconst data = new TextEncoder().encode(publishableKey);
+\tconst digest = await subtle.digest("sha-1", data);
+\treturn require_isomorphicBtoa.isomorphicBtoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\\+/gi, "-").replace(/\\//gi, "_").substring(0, 8);
+}`;
+  const patchedCjsGetCookieSuffix = `${fallbackSha1}
+async function getCookieSuffix(publishableKey, subtle = globalThis.crypto?.subtle) {
+\tconst data = new TextEncoder().encode(publishableKey);
+\tconst digest = subtle ? await subtle.digest("sha-1", data) : fallbackSha1(data);
+\treturn require_isomorphicBtoa.isomorphicBtoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\\+/gi, "-").replace(/\\//gi, "_").substring(0, 8);
+}`;
+  const originalEsmGetCookieSuffix = `async function getCookieSuffix(publishableKey, subtle = globalThis.crypto.subtle) {
+\tconst data = new TextEncoder().encode(publishableKey);
+\tconst digest = await subtle.digest("sha-1", data);
+\treturn isomorphicBtoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\\+/gi, "-").replace(/\\//gi, "_").substring(0, 8);
+}`;
+  const patchedEsmGetCookieSuffix = `${fallbackSha1}
+async function getCookieSuffix(publishableKey, subtle = globalThis.crypto?.subtle) {
+\tconst data = new TextEncoder().encode(publishableKey);
+\tconst digest = subtle ? await subtle.digest("sha-1", data) : fallbackSha1(data);
+\treturn isomorphicBtoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\\+/gi, "-").replace(/\\//gi, "_").substring(0, 8);
+}`;
+
+  let changed = false;
+
+  {
+    let source = readFileSync(clerkSharedKeyPaths.cjs, 'utf8');
+    const result = replaceOnce(
+      source,
+      originalCjsGetCookieSuffix,
+      patchedCjsGetCookieSuffix,
+      `${clerkSharedKeyPaths.cjs} cookie suffix fallback`,
+    );
+    source = result.source;
+    changed = writeIfChanged(clerkSharedKeyPaths.cjs, source, result.changed) || changed;
+  }
+
+  {
+    let source = readFileSync(clerkSharedKeyPaths.esm, 'utf8');
+    const result = replaceOnce(
+      source,
+      originalEsmGetCookieSuffix,
+      patchedEsmGetCookieSuffix,
+      `${clerkSharedKeyPaths.esm} cookie suffix fallback`,
+    );
+    source = result.source;
+    changed = writeIfChanged(clerkSharedKeyPaths.esm, source, result.changed) || changed;
+  }
+
+  return changed;
 }
 
 function patchClerkKeyless() {
@@ -627,8 +495,10 @@ const compilerChanged = patchCompiler();
 const wrapperChanged = patchWrapper();
 const clerkBackendChanged = patchClerkBackendRequest();
 const cryptoPolyfillChanged = patchCryptoPolyfill();
+const clerkBackendCookieSuffixChanged = patchClerkBackendCookieSuffix();
+const clerkSharedKeysChanged = patchClerkSharedKeys();
 const clerkKeylessChanged = patchClerkKeyless();
-const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged || clerkKeylessChanged;
+const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged || clerkBackendCookieSuffixChanged || clerkSharedKeysChanged || clerkKeylessChanged;
 console.log(
   changed
     ? 'Installed EdgeOne NextRequest adapter.'
