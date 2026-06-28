@@ -10,6 +10,11 @@ const wrapperPath = resolve(
   process.cwd(),
   'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/wrapper.js',
 );
+const clerkBackendRequestPaths = [
+  'node_modules/@clerk/backend/dist/index.js',
+  'node_modules/@clerk/backend/dist/internal.js',
+  'node_modules/@clerk/backend/dist/chunk-7KNTREEZ.mjs',
+].map((path) => resolve(process.cwd(), path));
 
 describe('EdgeOne NextRequest 适配', () => {
   it('为 Clerk 创建的 RequestInit 提供规范化的 eo 对象', () => {
@@ -29,5 +34,14 @@ describe('EdgeOne NextRequest 适配', () => {
     expect(wrapperSource).toContain("typeof request.eo === 'object'");
     expect(wrapperSource).toContain('eo: eoData');
     expect(wrapperSource).toContain("Object.defineProperty(newRequest, 'eo'");
+  });
+
+  it('为 ClerkRequest 的 Proxy clone 路径提供默认 eo 对象', () => {
+    for (const clerkBackendRequestPath of clerkBackendRequestPaths) {
+      const clerkSource = readFileSync(clerkBackendRequestPath, 'utf8');
+
+      expect(clerkSource).toContain('prop === "eo"');
+      expect(clerkSource).toContain('typeof value === "object" ? value : {};');
+    }
   });
 });
