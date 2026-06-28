@@ -10,6 +10,10 @@ const middlewareSources = [
   'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware',
   fileName,
 ));
+const middlewareCompilerEntry = resolve(
+  process.cwd(),
+  'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/middleware.js',
+);
 
 describe('EdgeOne Next.js middleware environment bridge', () => {
   it('copies Clerk variables from the EdgeOne context before running Proxy', () => {
@@ -20,5 +24,13 @@ describe('EdgeOne Next.js middleware environment bridge', () => {
       expect(source).toContain("key.startsWith('CLERK_')");
       expect(source).toContain("key.startsWith('NEXT_PUBLIC_CLERK_')");
     }
+
+    const turbopackCompilerSource = readFileSync(middlewareSources[1], 'utf8');
+    expect(turbopackCompilerSource).toContain('// === Turbopack Environment Variables ===');
+    expect(turbopackCompilerSource).toContain('${polyfillsCode}\n\n${envCode}\n\n${turbopackCompatCode}');
+
+    const compilerEntrySource = readFileSync(middlewareCompilerEntry, 'utf8');
+    expect(compilerEntrySource).toContain('edgeone-clerk-env.json');
+    expect(compilerEntrySource).toContain('env: { DEBUG: "true", ...clerkEnvironment }');
   });
 });

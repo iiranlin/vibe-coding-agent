@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/patch-edgeone-middleware-env.mjs",
+    "prebuild": "node scripts/write-edgeone-clerk-env.mjs",
     "dev": "next dev",
     "build": "next build",
     "test": "vitest run",
