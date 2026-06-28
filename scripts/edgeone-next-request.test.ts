@@ -8,11 +8,13 @@ const compilerPath = resolve(
 );
 
 describe('EdgeOne NextRequest 适配', () => {
-  it('不把带有平台私有 eo 字段的原始 Request 直接传给 NextRequest', () => {
+  it('为 Clerk 创建的 RequestInit 提供规范化的 eo 对象', () => {
     const compilerSource = readFileSync(compilerPath, 'utf8');
 
     expect(compilerSource).not.toContain('new NextRequestClass(request, {');
     expect(compilerSource).toContain('new NextRequestClass(request.url, {');
     expect(compilerSource).toContain('headers: request.headers');
+    expect(compilerSource).toContain("typeof request.eo === 'object'");
+    expect(compilerSource).toContain('eo: eoData');
   });
 });
