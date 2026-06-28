@@ -18,6 +18,10 @@ const clerkBackendRequestPaths = [
   'node_modules/@clerk/backend/dist/internal.js',
   'node_modules/@clerk/backend/dist/chunk-7KNTREEZ.mjs',
 ].map((path) => resolve(process.cwd(), path));
+const clerkKeylessPaths = {
+  cjs: resolve(process.cwd(), 'node_modules/@clerk/nextjs/dist/cjs/server/keyless.js'),
+  esm: resolve(process.cwd(), 'node_modules/@clerk/nextjs/dist/esm/server/keyless.js'),
+};
 
 function replaceOnce(source, original, patched, label) {
   if (source.includes(patched)) return { source, changed: false };
@@ -253,11 +257,90 @@ if (!crypto.subtle) {
   return writeIfChanged(cryptoPolyfillPath, source, result.changed);
 }
 
+function patchClerkKeyless() {
+  let changed = false;
+
+  {
+    let source = readFileSync(clerkKeylessPaths.cjs, 'utf8');
+    const originalImportBlock = `var import_feature_flags = require("../utils/feature-flags");
+const keylessCookiePrefix = \`__clerk_keys_\`;`;
+    const patchedImportBlock = `var import_feature_flags = require("../utils/feature-flags");
+var import_crypto = require("node:crypto");
+const resolveSubtleCrypto = () => {
+  const subtle = globalThis.crypto?.subtle || import_crypto.webcrypto?.subtle;
+  if (!subtle) {
+    throw new Error("Clerk keyless requires Web Crypto subtle support.");
+  }
+  return subtle;
+};
+const keylessCookiePrefix = \`__clerk_keys_\`;`;
+    let result = replaceOnce(
+      source,
+      originalImportBlock,
+      patchedImportBlock,
+      `${clerkKeylessPaths.cjs} subtle resolver`,
+    );
+    source = result.source;
+    let fileChanged = result.changed;
+
+    result = replaceOnce(
+      source,
+      'const hashBuffer = await crypto.subtle.digest("SHA-256", data);',
+      'const hashBuffer = await resolveSubtleCrypto().digest("SHA-256", data);',
+      `${clerkKeylessPaths.cjs} subtle digest`,
+    );
+    source = result.source;
+    fileChanged ||= result.changed;
+
+    changed = writeIfChanged(clerkKeylessPaths.cjs, source, fileChanged) || changed;
+  }
+
+  {
+    let source = readFileSync(clerkKeylessPaths.esm, 'utf8');
+    const originalImportBlock = `import "../chunk-BUSYA2B4.js";
+import { canUseKeyless } from "../utils/feature-flags";
+const keylessCookiePrefix = \`__clerk_keys_\`;`;
+    const patchedImportBlock = `import "../chunk-BUSYA2B4.js";
+import { webcrypto as nodeWebcrypto } from "node:crypto";
+import { canUseKeyless } from "../utils/feature-flags";
+const resolveSubtleCrypto = () => {
+  const subtle = globalThis.crypto?.subtle || nodeWebcrypto?.subtle;
+  if (!subtle) {
+    throw new Error("Clerk keyless requires Web Crypto subtle support.");
+  }
+  return subtle;
+};
+const keylessCookiePrefix = \`__clerk_keys_\`;`;
+    let result = replaceOnce(
+      source,
+      originalImportBlock,
+      patchedImportBlock,
+      `${clerkKeylessPaths.esm} subtle resolver`,
+    );
+    source = result.source;
+    let fileChanged = result.changed;
+
+    result = replaceOnce(
+      source,
+      'const hashBuffer = await crypto.subtle.digest("SHA-256", data);',
+      'const hashBuffer = await resolveSubtleCrypto().digest("SHA-256", data);',
+      `${clerkKeylessPaths.esm} subtle digest`,
+    );
+    source = result.source;
+    fileChanged ||= result.changed;
+
+    changed = writeIfChanged(clerkKeylessPaths.esm, source, fileChanged) || changed;
+  }
+
+  return changed;
+}
+
 const compilerChanged = patchCompiler();
 const wrapperChanged = patchWrapper();
 const clerkBackendChanged = patchClerkBackendRequest();
 const cryptoPolyfillChanged = patchCryptoPolyfill();
-const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged;
+const clerkKeylessChanged = patchClerkKeyless();
+const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged || clerkKeylessChanged;
 console.log(
   changed
     ? 'Installed EdgeOne NextRequest adapter.'

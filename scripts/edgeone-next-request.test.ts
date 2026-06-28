@@ -19,6 +19,10 @@ const clerkBackendRequestPaths = [
   'node_modules/@clerk/backend/dist/internal.js',
   'node_modules/@clerk/backend/dist/chunk-7KNTREEZ.mjs',
 ].map((path) => resolve(process.cwd(), path));
+const clerkKeylessPaths = [
+  'node_modules/@clerk/nextjs/dist/cjs/server/keyless.js',
+  'node_modules/@clerk/nextjs/dist/esm/server/keyless.js',
+].map((path) => resolve(process.cwd(), path));
 
 describe('EdgeOne NextRequest 适配', () => {
   it('为 Clerk 创建的 RequestInit 提供规范化的 eo 对象', () => {
@@ -55,5 +59,14 @@ describe('EdgeOne NextRequest 适配', () => {
     expect(cryptoPolyfillSource).toContain('if (!crypto.subtle)');
     expect(cryptoPolyfillSource).toContain("require('node:crypto')");
     expect(cryptoPolyfillSource).toContain('nodeCrypto.webcrypto.subtle');
+  });
+
+  it('避免 Clerk keyless helper 直接读取裸 crypto.subtle', () => {
+    for (const clerkKeylessPath of clerkKeylessPaths) {
+      const clerkKeylessSource = readFileSync(clerkKeylessPath, 'utf8');
+
+      expect(clerkKeylessSource).not.toContain('await crypto.subtle.digest');
+      expect(clerkKeylessSource).toContain('resolveSubtleCrypto');
+    }
   });
 });
