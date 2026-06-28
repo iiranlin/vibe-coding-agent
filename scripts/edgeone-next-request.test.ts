@@ -20,6 +20,15 @@ const clerkBackendRequestPaths = [
   'node_modules/@clerk/backend/dist/internal.js',
   'node_modules/@clerk/backend/dist/chunk-7KNTREEZ.mjs',
 ].map((path) => resolve(process.cwd(), path));
+const clerkBackendCjsRuntimePaths = [
+  'node_modules/@clerk/backend/dist/index.js',
+  'node_modules/@clerk/backend/dist/internal.js',
+  'node_modules/@clerk/backend/dist/jwt/index.js',
+].map((path) => resolve(process.cwd(), path));
+const clerkBackendEsmRuntimePath = resolve(
+  process.cwd(),
+  'node_modules/@clerk/backend/dist/chunk-7E7A3JZN.mjs',
+);
 const clerkKeylessPaths = [
   'node_modules/@clerk/nextjs/dist/cjs/server/keyless.js',
   'node_modules/@clerk/nextjs/dist/esm/server/keyless.js',
@@ -94,6 +103,21 @@ describe('EdgeOne NextRequest 适配', () => {
       expect(clerkSource).not.toContain('runtime.crypto.subtle) : "";');
       expect(clerkSource).toContain('runtime.crypto?.subtle) : "";');
     }
+  });
+
+  it('让 Clerk JWT 验签使用 EdgeOne 提供的 crypto 对象', () => {
+    for (const clerkBackendRuntimePath of clerkBackendCjsRuntimePaths) {
+      const clerkSource = readFileSync(clerkBackendRuntimePath, 'utf8');
+
+      expect(clerkSource).not.toContain('crypto: import_crypto.webcrypto,');
+      expect(clerkSource).toContain(
+        'crypto: import_crypto.webcrypto || import_crypto || globalThis.crypto,',
+      );
+    }
+
+    const clerkEsmSource = readFileSync(clerkBackendEsmRuntimePath, 'utf8');
+    expect(clerkEsmSource).not.toContain('var runtime = {\n  crypto,');
+    expect(clerkEsmSource).toContain('crypto: crypto || globalThis.crypto,');
   });
 
   it('避免 Clerk keyless helper 直接读取裸 crypto.subtle', () => {
