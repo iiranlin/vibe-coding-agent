@@ -1,9 +1,15 @@
 'use client';
 
 import { FormEvent, memo, useEffect, useMemo, useRef, useState } from 'react';
+import { SignInButton, SignUpButton, UserButton, useAuth, useClerk } from '@clerk/nextjs';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../agents/utils/_text';
+import {
+  LANGUAGE_CHANGE_EVENT,
+  LANGUAGE_STORAGE_KEY,
+  type AppLocale,
+} from './language';
 
 type TimelineStep =
   | { kind: 'status'; text: string }
@@ -143,9 +149,8 @@ type ChatStreamEvent =
       message?: string;
     };
 
-type Locale = 'zh' | 'en';
+type Locale = AppLocale;
 
-const LANGUAGE_STORAGE_KEY = 'web-dev-agent-language';
 const PHASE_ORDER: NormalizedStepPhase[] = ['scaffold', 'modify', 'code', 'install', 'preview', 'link'];
 const TYPEWRITER_INTERVAL_MS = 18;
 const TYPEWRITER_CHARS_PER_TICK = 3;
@@ -157,6 +162,14 @@ const TRANSLATIONS = {
   zh: {
     languageToggleLabel: 'English',
     languageToggleAria: 'Switch language to English',
+    auth: {
+      signIn: '登录',
+      signUp: '注册',
+      signInToBuild: '登录后构建',
+      signInRequired: '请先登录后再使用 AI 构建功能。',
+      signedOutHint: '登录后即可构建项目、查看预览和浏览沙箱文件。',
+      admin: '管理',
+    },
     home: {
       titleBefore: '今天想',
       titleAccent: '创建',
@@ -263,6 +276,14 @@ const TRANSLATIONS = {
   en: {
     languageToggleLabel: '中文',
     languageToggleAria: '切换语言为中文',
+    auth: {
+      signIn: 'Sign in',
+      signUp: 'Sign up',
+      signInToBuild: 'Sign in to build',
+      signInRequired: 'Please sign in before using the AI build workflow.',
+      signedOutHint: 'Sign in to build projects, view previews, and browse sandbox files.',
+      admin: 'Admin',
+    },
     home: {
       titleBefore: 'What will you',
       titleAccent: 'create',
@@ -435,6 +456,8 @@ function getAssistantScrollSignature(message: ChatMessage) {
 }
 
 export default function Home() {
+  const { isLoaded, isSignedIn } = useAuth();
+  const { openSignIn } = useClerk();
   const [language, setLanguage] = useState<Locale>('zh');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -463,7 +486,8 @@ export default function Home() {
   const showProcessThinkingRef = useRef(true);
 
   const t = TRANSLATIONS[language];
-  const canSend = input.trim().length > 0 && !loading;
+  const canSend = input.trim().length > 0 && !loading && isLoaded;
+  const requiresSignIn = isLoaded && !isSignedIn;
   const hasWorkspace = messages.length > 0 || Boolean(preview) || Boolean(build);
   const fileCount = fileTree?.items.filter((item) => item.type === 'file').length ?? 0;
   const latestAssistantMessage = messages.findLast((message) => message.role === 'assistant');
@@ -485,6 +509,7 @@ export default function Home() {
   useEffect(() => {
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+    window.dispatchEvent(new CustomEvent(LANGUAGE_CHANGE_EVENT, { detail: language }));
   }, [language]);
 
   useEffect(() => {
@@ -543,6 +568,13 @@ export default function Home() {
   async function sendMessage(message: string) {
     const trimmed = message.trim();
     if (!trimmed || loading) {
+      return;
+    }
+    if (!isLoaded) {
+      return;
+    }
+    if (!isSignedIn) {
+      openSignIn();
       return;
     }
 
@@ -880,11 +912,19 @@ export default function Home() {
           conversationId: requestConversationId,
           'makers-conversation-id': requestConversationId,
         },
+        credentials: 'include',
         body: JSON.stringify({
           message: trimmed,
           ...(isStartingFromHome ? { resetProject: true } : {}),
         }),
       });
+
+      if (response.status === 401) {
+        openSignIn();
+        appendStep({ kind: 'error', text: t.auth.signInRequired });
+        finalizeAssistant(t.auth.signInRequired, 'error');
+        return;
+      }
 
       const contentType = response.headers.get('content-type') || '';
       if (!response.body || !contentType.includes('application/x-ndjson')) {
@@ -960,6 +1000,37 @@ export default function Home() {
             <span className="truncate">Coding Agent Starter</span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {requiresSignIn && (
+              <>
+                <SignInButton mode="modal">
+                  <button
+                    type="button"
+                    className="rounded-full border border-white/15 bg-[#141917]/90 px-3 py-1.5 text-xs font-semibold text-[#dff8ef] shadow-lg shadow-black/20 transition hover:border-[#7bd8b4] hover:text-white"
+                  >
+                    {t.auth.signIn}
+                  </button>
+                </SignInButton>
+                <SignUpButton mode="modal">
+                  <button
+                    type="button"
+                    className="rounded-full bg-[#f2c779] px-3.5 py-1.5 text-xs font-semibold text-[#21170a] shadow-lg shadow-[#f2c779]/15 transition hover:bg-[#ffd98a]"
+                  >
+                    {t.auth.signUp}
+                  </button>
+                </SignUpButton>
+              </>
+            )}
+            {isLoaded && isSignedIn && (
+              <>
+                <a
+                  href="/admin"
+                  className="rounded-full border border-white/15 bg-[#141917]/90 px-3 py-1.5 text-xs font-semibold text-[#dff8ef] shadow-lg shadow-black/20 transition hover:border-[#7bd8b4] hover:text-white"
+                >
+                  {t.auth.admin}
+                </a>
+                <UserButton />
+              </>
+            )}
             <button
               type="button"
               onClick={() => setLanguage((current) => (current === 'zh' ? 'en' : 'zh'))}
@@ -988,6 +1059,11 @@ export default function Home() {
             <p className="mt-7 text-[clamp(0.95rem,1.15vw,1.25rem)] font-semibold text-[#b5c4be]">
               {t.home.subtitle}
             </p>
+            {requiresSignIn && (
+              <p className="mt-3 text-sm font-medium text-[#f2c779]">
+                {t.auth.signedOutHint}
+              </p>
+            )}
 
             <form
               onSubmit={handleSubmit}
@@ -1005,7 +1081,7 @@ export default function Home() {
                   disabled={!canSend}
                   className="group inline-flex min-h-14 w-full cursor-pointer items-center justify-center gap-3 rounded-2xl bg-[#45b98e] px-7 py-4 text-lg font-semibold text-white shadow-lg shadow-[#45b98e]/20 transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#56c99f] hover:shadow-xl hover:shadow-[#45b98e]/35 active:translate-y-0 disabled:cursor-not-allowed disabled:bg-white/20 disabled:text-white/45 disabled:shadow-none disabled:hover:translate-y-0 sm:w-auto sm:min-w-[190px] sm:text-xl"
                 >
-                  {loading ? t.home.building : t.home.buildNow}
+                  {loading ? t.home.building : requiresSignIn ? t.auth.signInToBuild : t.home.buildNow}
                   <span className="transition-transform duration-200 group-hover:translate-x-1">
                     <ArrowIcon />
                   </span>
@@ -1111,7 +1187,7 @@ export default function Home() {
                   disabled={!canSend}
                   className="rounded-full bg-[#f2c779] px-5 text-sm font-semibold text-[#21170a] transition hover:bg-[#ffd98a] disabled:cursor-not-allowed disabled:bg-white/20 disabled:text-white/40"
                 >
-                  {t.workspace.send}
+                  {requiresSignIn ? t.auth.signIn : t.workspace.send}
                 </button>
               </form>
             </div>
@@ -2236,6 +2312,7 @@ function FilesPanel({
       const resp = await fetch(`/file?path=${encodeURIComponent(path)}`, {
         method: 'GET',
         headers,
+        credentials: 'include',
       });
       const data = (await resp.json()) as {
         ok?: boolean;

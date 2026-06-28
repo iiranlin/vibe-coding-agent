@@ -1,5 +1,10 @@
-import type { Metadata } from 'next';
+import { LocalizedClerkProvider } from './clerk-provider';
 import './globals.css';
+
+type Metadata = {
+  title?: string;
+  description?: string;
+};
 
 export const metadata: Metadata = {
   title: 'Web Dev Agent',
@@ -13,7 +18,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        <LocalizedClerkProvider>{children}</LocalizedClerkProvider>
+      </body>
     </html>
   );
 }
