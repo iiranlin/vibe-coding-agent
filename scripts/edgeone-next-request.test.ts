@@ -10,6 +10,10 @@ const wrapperPath = resolve(
   process.cwd(),
   'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/wrapper.js',
 );
+const cryptoPolyfillPath = resolve(
+  process.cwd(),
+  'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/polyfills/crypto.js',
+);
 const clerkBackendRequestPaths = [
   'node_modules/@clerk/backend/dist/index.js',
   'node_modules/@clerk/backend/dist/internal.js',
@@ -43,5 +47,13 @@ describe('EdgeOne NextRequest 适配', () => {
       expect(clerkSource).toContain('prop === "eo"');
       expect(clerkSource).toContain('typeof value === "object" ? value : {};');
     }
+  });
+
+  it('为 EdgeOne crypto polyfill 提供 Web Crypto subtle 兜底', () => {
+    const cryptoPolyfillSource = readFileSync(cryptoPolyfillPath, 'utf8');
+
+    expect(cryptoPolyfillSource).toContain('if (!crypto.subtle)');
+    expect(cryptoPolyfillSource).toContain("require('node:crypto')");
+    expect(cryptoPolyfillSource).toContain('nodeCrypto.webcrypto.subtle');
   });
 });

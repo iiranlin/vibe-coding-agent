@@ -9,6 +9,10 @@ const wrapperPath = resolve(
   process.cwd(),
   'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/wrapper.js',
 );
+const cryptoPolyfillPath = resolve(
+  process.cwd(),
+  'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/polyfills/crypto.js',
+);
 const clerkBackendRequestPaths = [
   'node_modules/@clerk/backend/dist/index.js',
   'node_modules/@clerk/backend/dist/internal.js',
@@ -188,10 +192,72 @@ function patchClerkBackendRequest() {
   return changed;
 }
 
+function patchCryptoPolyfill() {
+  let source = readFileSync(cryptoPolyfillPath, 'utf8');
+  const originalCryptoDeclaration = `const crypto = globalThis.crypto || {};
+
+// \\u786E\\u4FDD getRandomValues \\u53EF\\u7528`;
+  const patchedCryptoDeclaration = `const crypto = globalThis.crypto || {};
+
+if (!crypto.subtle) {
+  const nodeCrypto = (() => {
+    try {
+      return require('node:crypto');
+    } catch {
+      return undefined;
+    }
+  })();
+
+  if (nodeCrypto?.webcrypto?.subtle) {
+    crypto.subtle = nodeCrypto.webcrypto.subtle;
+  } else if (nodeCrypto?.createHash && nodeCrypto?.createHmac) {
+    const normalizeAlgorithm = (algorithm) => {
+      const name = typeof algorithm === 'string'
+        ? algorithm
+        : algorithm?.name || algorithm?.hash?.name || algorithm?.hash;
+      return String(name).toLowerCase().replace(/-/g, '');
+    };
+    const toArrayBuffer = (buffer) => (
+      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+    );
+    crypto.subtle = {
+      async digest(algorithm, data) {
+        const hash = nodeCrypto.createHash(normalizeAlgorithm(algorithm));
+        hash.update(Buffer.from(data));
+        return toArrayBuffer(hash.digest());
+      },
+      async importKey(format, keyData, algorithm) {
+        return { format, keyData, algorithm };
+      },
+      async sign(algorithm, key, data) {
+        const hmac = nodeCrypto.createHmac(
+          normalizeAlgorithm(key.algorithm?.hash || algorithm),
+          Buffer.from(key.keyData),
+        );
+        hmac.update(Buffer.from(data));
+        return toArrayBuffer(hmac.digest());
+      }
+    };
+  }
+}
+
+// \\u786E\\u4FDD getRandomValues \\u53EF\\u7528`;
+
+  const result = replaceOnce(
+    source,
+    originalCryptoDeclaration,
+    patchedCryptoDeclaration,
+    `${cryptoPolyfillPath} Web Crypto subtle fallback`,
+  );
+  source = result.source;
+  return writeIfChanged(cryptoPolyfillPath, source, result.changed);
+}
+
 const compilerChanged = patchCompiler();
 const wrapperChanged = patchWrapper();
 const clerkBackendChanged = patchClerkBackendRequest();
-const changed = compilerChanged || wrapperChanged || clerkBackendChanged;
+const cryptoPolyfillChanged = patchCryptoPolyfill();
+const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged;
 console.log(
   changed
     ? 'Installed EdgeOne NextRequest adapter.'
