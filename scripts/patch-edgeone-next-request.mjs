@@ -5,6 +5,52 @@ const compilerPath = resolve(
   process.cwd(),
   'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/compiler.js',
 );
+const wrapperPath = resolve(
+  process.cwd(),
+  'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/wrapper.js',
+);
+
+function replaceOnce(source, original, patched, label) {
+  if (source.includes(patched)) return { source, changed: false };
+
+  const occurrences = source.split(original).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      `Unsupported @edgeone/opennextjs-pages ${label}: expected 1 target, found ${occurrences}.`,
+    );
+  }
+
+  return { source: source.replace(original, patched), changed: true };
+}
+
+function replaceExactCount(source, original, patched, expectedCount, label) {
+  const occurrences = source.split(original).length - 1;
+  if (occurrences === 0) {
+    if (source.includes(patched)) return { source, changed: false };
+    throw new Error(
+      `Unsupported @edgeone/opennextjs-pages ${label}: target is missing and patched form was not found.`,
+    );
+  }
+  if (occurrences !== expectedCount) {
+    throw new Error(
+      `Unsupported @edgeone/opennextjs-pages ${label}: expected ${expectedCount} targets, found ${occurrences}.`,
+    );
+  }
+
+  return { source: source.replaceAll(original, patched), changed: true };
+}
+
+function writeIfChanged(path, source, changed) {
+  if (changed) writeFileSync(path, source);
+  return changed;
+}
+
+const originalEoData = 'const eoData = request.eo || {};';
+const patchedEoData = `const eoData = request.eo && typeof request.eo === 'object'
+      ? request.eo
+      : {};`;
+
+function patchCompiler() {
 const originalBlock = `nextRequest = new NextRequestClass(request, {
           nextConfig: {},
           geo: nextGeo,
@@ -22,21 +68,10 @@ const patchedBlock = `nextRequest = new NextRequestClass(request.url, {
 let source = readFileSync(compilerPath, 'utf8');
 let changed = false;
 
-if (!source.includes(patchedBlock)) {
-  const occurrences = source.split(originalBlock).length - 1;
-  if (occurrences !== 1) {
-    throw new Error(
-      `Unsupported @edgeone/opennextjs-pages compiler ${compilerPath}: expected 1 NextRequest target, found ${occurrences}.`,
-    );
-  }
-  source = source.replace(originalBlock, patchedBlock);
-  changed = true;
-}
+let result = replaceOnce(source, originalBlock, patchedBlock, `${compilerPath} NextRequest target`);
+source = result.source;
+changed ||= result.changed;
 
-const originalEoData = 'const eoData = request.eo || {};';
-const patchedEoData = `const eoData = request.eo && typeof request.eo === 'object'
-      ? request.eo
-      : {};`;
 const wrapperGeoPrefix = '      geo: nextGeo,    // EdgeOne geo';
 const wrapperEoMarker = '      eo: eoData,';
 
@@ -54,7 +89,72 @@ if (!source.includes(wrapperEoMarker)) {
   changed = true;
 }
 
-if (changed) writeFileSync(compilerPath, source);
+return writeIfChanged(compilerPath, source, changed);
+}
+
+function patchWrapper() {
+  let source = readFileSync(wrapperPath, 'utf8');
+  let changed = false;
+
+  let result = replaceExactCount(
+    source,
+    originalEoData,
+    patchedEoData,
+    2,
+    `${wrapperPath} eoData normalization`,
+  );
+  source = result.source;
+  changed ||= result.changed;
+
+  const originalRawRequestBlock = `  const newRequest = new Request(request.url, {
+    method: request.method,
+    headers: newHeaders,
+    body: request.body,
+  });`;
+  const patchedRawRequestBlock = `  const newRequest = new Request(request.url, {
+    method: request.method,
+    headers: newHeaders,
+    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : request.body,
+    eo: eoData,
+  });
+
+  Object.defineProperty(newRequest, 'eo', {
+    value: eoData,
+    writable: true,
+    enumerable: true,
+    configurable: true
+  });`;
+
+  result = replaceOnce(
+    source,
+    originalRawRequestBlock,
+    patchedRawRequestBlock,
+    `${wrapperPath} raw RequestInit eo`,
+  );
+  source = result.source;
+  changed ||= result.changed;
+
+  const originalAdapterRequestBlock = `      body: request.body,
+      nextConfig: {`;
+  const patchedAdapterRequestBlock = `      body: request.body,
+      eo: eoData,
+      nextConfig: {`;
+
+  result = replaceOnce(
+    source,
+    originalAdapterRequestBlock,
+    patchedAdapterRequestBlock,
+    `${wrapperPath} adapter request eo`,
+  );
+  source = result.source;
+  changed ||= result.changed;
+
+  return writeIfChanged(wrapperPath, source, changed);
+}
+
+const compilerChanged = patchCompiler();
+const wrapperChanged = patchWrapper();
+const changed = compilerChanged || wrapperChanged;
 console.log(
   changed
     ? 'Installed EdgeOne NextRequest adapter.'

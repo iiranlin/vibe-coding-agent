@@ -6,6 +6,10 @@ const compilerPath = resolve(
   process.cwd(),
   'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/compiler.js',
 );
+const wrapperPath = resolve(
+  process.cwd(),
+  'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/wrapper.js',
+);
 
 describe('EdgeOne NextRequest 适配', () => {
   it('为 Clerk 创建的 RequestInit 提供规范化的 eo 对象', () => {
@@ -16,5 +20,14 @@ describe('EdgeOne NextRequest 适配', () => {
     expect(compilerSource).toContain('headers: request.headers');
     expect(compilerSource).toContain("typeof request.eo === 'object'");
     expect(compilerSource).toContain('eo: eoData');
+  });
+
+  it('为 EdgeOne middleware wrapper 中的 RequestInit 提供 eo 对象', () => {
+    const wrapperSource = readFileSync(wrapperPath, 'utf8');
+
+    expect(wrapperSource).not.toContain('const eoData = request.eo || {};');
+    expect(wrapperSource).toContain("typeof request.eo === 'object'");
+    expect(wrapperSource).toContain('eo: eoData');
+    expect(wrapperSource).toContain("Object.defineProperty(newRequest, 'eo'");
   });
 });
