@@ -1,6 +1,7 @@
 node_modules
 .edgeone
 .next
+.generated
 .DS_Store
 .env
 .env.local

@@ -6,27 +6,44 @@ const { loadEnvConfig } = nextEnv;
 
 loadEnvConfig(process.cwd());
 
-const clerkEnvironment = Object.fromEntries(
-  Object.entries(process.env).filter(([key, value]) => (
-    typeof value === 'string'
-    && (key.startsWith('CLERK_') || key.startsWith('NEXT_PUBLIC_CLERK_'))
-  )),
-);
 const requiredVariables = [
   'CLERK_SECRET_KEY',
   'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY',
 ];
-const missingVariables = requiredVariables.filter((key) => !clerkEnvironment[key]);
+const missingVariables = requiredVariables.filter((key) => !process.env[key]);
 
 if (missingVariables.length > 0) {
   throw new Error(`Missing Clerk build environment variables: ${missingVariables.join(', ')}`);
 }
 
-const cachePath = resolve(
+const outputPath = process.env.CLERK_RUNTIME_CONFIG_PATH || resolve(
   process.cwd(),
-  'node_modules/.cache/edgeone-clerk-env.json',
+  '.generated/clerk-runtime-config.ts',
 );
-mkdirSync(dirname(cachePath), { recursive: true });
-writeFileSync(cachePath, JSON.stringify(clerkEnvironment), { mode: 0o600 });
-chmodSync(cachePath, 0o600);
-console.log('Prepared Clerk environment for EdgeOne middleware compilation.');
+const runtimeConfig = {
+  publishableKey: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+  secretKey: process.env.CLERK_SECRET_KEY,
+};
+const runtimeEnvironment = {
+  CLERK_SECRET_KEY: runtimeConfig.secretKey,
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: runtimeConfig.publishableKey,
+};
+const moduleSource = [
+  '// This file is generated before local development and production builds.',
+  '// It must remain server-only and must not be committed.',
+  `const clerkRuntimeEnvironment = ${JSON.stringify(runtimeEnvironment, null, 2)} as const;`,
+  '',
+  "if (typeof process !== 'undefined' && process.env) {",
+  '  for (const [key, value] of Object.entries(clerkRuntimeEnvironment)) {',
+  '    process.env[key] = value;',
+  '  }',
+  '}',
+  '',
+  `export const clerkRuntimeConfig = ${JSON.stringify(runtimeConfig, null, 2)} as const;`,
+  '',
+].join('\n');
+
+mkdirSync(dirname(outputPath), { recursive: true });
+writeFileSync(outputPath, moduleSource, { mode: 0o600 });
+chmodSync(outputPath, 0o600);
+console.log('Prepared Clerk runtime configuration for Edge middleware.');

@@ -1,3 +1,4 @@
+import './.generated/clerk-runtime-config';
 import { clerkMiddleware } from '@clerk/nextjs/server';
 
 export default clerkMiddleware();
