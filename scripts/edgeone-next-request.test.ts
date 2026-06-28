@@ -120,6 +120,83 @@ describe('EdgeOne NextRequest 适配', () => {
     expect(clerkEsmSource).toContain('crypto: crypto || globalThis.crypto,');
   });
 
+  it('在 EdgeOne 拒绝 Clerk RSA 参数时使用规范化参数重试', () => {
+    for (const clerkBackendRuntimePath of [
+      ...clerkBackendCjsRuntimePaths,
+      clerkBackendEsmRuntimePath,
+    ]) {
+      const clerkSource = readFileSync(clerkBackendRuntimePath, 'utf8');
+
+      expect(clerkSource).toContain('normalizeEdgeOneJwtAlgorithm');
+      expect(clerkSource).toContain('normalizeEdgeOneJwk');
+      expect(clerkSource).toContain('error?.message !== "Param Invalid"');
+      expect(clerkSource).toContain('{ name: algorithm.name },');
+    }
+  });
+
+  it('使用 EdgeOne 兼容参数完成 Clerk JWT importKey 和 verify', async () => {
+    const clerkJwt = await import(
+      `${pathToFileURL(clerkBackendEsmRuntimePath).href}?edgeone-rsa-params`
+    );
+    const mutableRuntime = clerkJwt.runtime as { crypto: unknown };
+    const originalCrypto = mutableRuntime.crypto;
+    const importCalls: unknown[][] = [];
+    const verifyCalls: unknown[][] = [];
+    const importedKey = { type: 'public' };
+
+    mutableRuntime.crypto = {
+      subtle: {
+        async importKey(...args: unknown[]) {
+          importCalls.push(args);
+          if (importCalls.length === 1) throw new Error('Param Invalid');
+          return importedKey;
+        },
+        async verify(...args: unknown[]) {
+          verifyCalls.push(args);
+          return true;
+        },
+      },
+    };
+
+    try {
+      const jwk = {
+        kty: 'RSA',
+        n: 'modulus',
+        e: 'AQAB',
+        kid: 'test-key',
+        alg: 'RS256',
+        use: 'sig',
+      };
+      const algorithm = {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: { name: 'SHA-256' },
+      };
+      const result = await clerkJwt.importKey(jwk, algorithm, 'verify');
+
+      expect(result).toBe(importedKey);
+      expect(importCalls).toHaveLength(2);
+      expect(importCalls[1]?.[1]).toEqual({ kty: 'RSA', n: 'modulus', e: 'AQAB' });
+      expect(importCalls[1]?.[2]).toEqual({
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: 'SHA-256',
+      });
+
+      const signatureResult = await clerkJwt.hasValidSignature(
+        {
+          header: { alg: 'RS256' },
+          signature: new Uint8Array([1]),
+          raw: { header: 'header', payload: 'payload' },
+        },
+        jwk,
+      );
+
+      expect(signatureResult).toEqual({ data: true });
+      expect(verifyCalls[0]?.[0]).toEqual({ name: 'RSASSA-PKCS1-v1_5' });
+    } finally {
+      mutableRuntime.crypto = originalCrypto;
+    }
+  });
+
   it('避免 Clerk keyless helper 直接读取裸 crypto.subtle', () => {
     for (const clerkKeylessPath of clerkKeylessPaths) {
       const clerkKeylessSource = readFileSync(clerkKeylessPath, 'utf8');

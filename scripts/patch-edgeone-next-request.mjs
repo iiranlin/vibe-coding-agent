@@ -335,6 +335,75 @@ function patchClerkBackendRuntimeCrypto() {
   return changed;
 }
 
+function patchClerkBackendJwtCryptoParams() {
+  const originalImportKey = `function importKey(key, algorithm, keyUsage) {
+  if (typeof key === "object") {
+    return runtime.crypto.subtle.importKey("jwk", key, algorithm, false, [keyUsage]);
+  }
+  const keyData = pemToBuffer(key);
+  const format = keyUsage === "sign" ? "pkcs8" : "spki";
+  return runtime.crypto.subtle.importKey(format, keyData, algorithm, false, [keyUsage]);
+}`;
+  const patchedImportKey = `function normalizeEdgeOneJwtAlgorithm(algorithm) {
+  const hash = typeof algorithm.hash === "string" ? algorithm.hash : algorithm.hash?.name;
+  return { ...algorithm, hash };
+}
+function normalizeEdgeOneJwk(key) {
+  const { kty, n, e } = key;
+  return { kty, n, e };
+}
+async function importKey(key, algorithm, keyUsage) {
+  const isJwk = typeof key === "object";
+  const format = isJwk ? "jwk" : keyUsage === "sign" ? "pkcs8" : "spki";
+  const keyData = isJwk ? key : pemToBuffer(key);
+  try {
+    return await runtime.crypto.subtle.importKey(format, keyData, algorithm, false, [keyUsage]);
+  } catch (error) {
+    if (error?.message !== "Param Invalid") throw error;
+    return runtime.crypto.subtle.importKey(
+      format,
+      isJwk ? normalizeEdgeOneJwk(key) : keyData,
+      normalizeEdgeOneJwtAlgorithm(algorithm),
+      false,
+      [keyUsage]
+    );
+  }
+}`;
+  const originalVerifyAlgorithm = `    const verified = await runtime.crypto.subtle.verify(
+      algorithm.name,`;
+  const patchedVerifyAlgorithm = `    const verified = await runtime.crypto.subtle.verify(
+      { name: algorithm.name },`;
+  let changed = false;
+
+  for (const clerkBackendRuntimePath of [
+    ...clerkBackendCjsRuntimePaths,
+    clerkBackendEsmRuntimePath,
+  ]) {
+    let source = readFileSync(clerkBackendRuntimePath, 'utf8');
+    let result = replaceOnce(
+      source,
+      originalImportKey,
+      patchedImportKey,
+      `${clerkBackendRuntimePath} Clerk JWT importKey EdgeOne fallback`,
+    );
+    source = result.source;
+    let fileChanged = result.changed;
+
+    result = replaceOnce(
+      source,
+      originalVerifyAlgorithm,
+      patchedVerifyAlgorithm,
+      `${clerkBackendRuntimePath} Clerk JWT verify EdgeOne params`,
+    );
+    source = result.source;
+    fileChanged ||= result.changed;
+
+    changed = writeIfChanged(clerkBackendRuntimePath, source, fileChanged) || changed;
+  }
+
+  return changed;
+}
+
 function patchClerkSharedKeys() {
   const fallbackSha1 = `function fallbackSha1(data) {
 \tconst bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -536,9 +605,10 @@ const clerkBackendChanged = patchClerkBackendRequest();
 const cryptoPolyfillChanged = patchCryptoPolyfill();
 const clerkBackendCookieSuffixChanged = patchClerkBackendCookieSuffix();
 const clerkBackendRuntimeCryptoChanged = patchClerkBackendRuntimeCrypto();
+const clerkBackendJwtCryptoParamsChanged = patchClerkBackendJwtCryptoParams();
 const clerkSharedKeysChanged = patchClerkSharedKeys();
 const clerkKeylessChanged = patchClerkKeyless();
-const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged || clerkBackendCookieSuffixChanged || clerkBackendRuntimeCryptoChanged || clerkSharedKeysChanged || clerkKeylessChanged;
+const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged || clerkBackendCookieSuffixChanged || clerkBackendRuntimeCryptoChanged || clerkBackendJwtCryptoParamsChanged || clerkSharedKeysChanged || clerkKeylessChanged;
 console.log(
   changed
     ? 'Installed EdgeOne NextRequest adapter.'
