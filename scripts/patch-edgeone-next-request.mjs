@@ -9,6 +9,11 @@ const wrapperPath = resolve(
   process.cwd(),
   'node_modules/@edgeone/opennextjs-pages/dist/build/functions/middleware/wrapper.js',
 );
+const clerkBackendRequestPaths = [
+  'node_modules/@clerk/backend/dist/index.js',
+  'node_modules/@clerk/backend/dist/internal.js',
+  'node_modules/@clerk/backend/dist/chunk-7KNTREEZ.mjs',
+].map((path) => resolve(process.cwd(), path));
 
 function replaceOnce(source, original, patched, label) {
   if (source.includes(patched)) return { source, changed: false };
@@ -152,9 +157,41 @@ function patchWrapper() {
   return writeIfChanged(wrapperPath, source, changed);
 }
 
+function patchClerkBackendRequest() {
+  let changed = false;
+  const originalProxyGetBlock = `          if (prop === "signal" || prop === "body") {
+            return void 0;
+          }
+          return Reflect.get(target, prop, target);`;
+  const patchedProxyGetBlock = `          if (prop === "signal" || prop === "body") {
+            return void 0;
+          }
+          if (prop === "eo") {
+            const value = Reflect.get(target, prop, target);
+            return value && typeof value === "object" ? value : {};
+          }
+          return Reflect.get(target, prop, target);`;
+
+  for (const clerkBackendRequestPath of clerkBackendRequestPaths) {
+    let source = readFileSync(clerkBackendRequestPath, 'utf8');
+    const result = replaceOnce(
+      source,
+      originalProxyGetBlock,
+      patchedProxyGetBlock,
+      `${clerkBackendRequestPath} ClerkRequest eo proxy`,
+    );
+    source = result.source;
+    const fileChanged = writeIfChanged(clerkBackendRequestPath, source, result.changed);
+    changed = changed || fileChanged;
+  }
+
+  return changed;
+}
+
 const compilerChanged = patchCompiler();
 const wrapperChanged = patchWrapper();
-const changed = compilerChanged || wrapperChanged;
+const clerkBackendChanged = patchClerkBackendRequest();
+const changed = compilerChanged || wrapperChanged || clerkBackendChanged;
 console.log(
   changed
     ? 'Installed EdgeOne NextRequest adapter.'
