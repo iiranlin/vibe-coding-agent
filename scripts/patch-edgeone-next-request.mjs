@@ -18,6 +18,15 @@ const clerkBackendRequestPaths = [
   'node_modules/@clerk/backend/dist/internal.js',
   'node_modules/@clerk/backend/dist/chunk-7KNTREEZ.mjs',
 ].map((path) => resolve(process.cwd(), path));
+const clerkBackendCjsRuntimePaths = [
+  'node_modules/@clerk/backend/dist/index.js',
+  'node_modules/@clerk/backend/dist/internal.js',
+  'node_modules/@clerk/backend/dist/jwt/index.js',
+].map((path) => resolve(process.cwd(), path));
+const clerkBackendEsmRuntimePath = resolve(
+  process.cwd(),
+  'node_modules/@clerk/backend/dist/chunk-7E7A3JZN.mjs',
+);
 const clerkKeylessPaths = {
   cjs: resolve(process.cwd(), 'node_modules/@clerk/nextjs/dist/cjs/server/keyless.js'),
   esm: resolve(process.cwd(), 'node_modules/@clerk/nextjs/dist/esm/server/keyless.js'),
@@ -296,6 +305,36 @@ function patchClerkBackendCookieSuffix() {
   return changed;
 }
 
+function patchClerkBackendRuntimeCrypto() {
+  let changed = false;
+
+  for (const clerkBackendRuntimePath of clerkBackendCjsRuntimePaths) {
+    let source = readFileSync(clerkBackendRuntimePath, 'utf8');
+    const result = replaceOnce(
+      source,
+      'crypto: import_crypto.webcrypto,',
+      'crypto: import_crypto.webcrypto || import_crypto || globalThis.crypto,',
+      `${clerkBackendRuntimePath} Clerk runtime crypto fallback`,
+    );
+    source = result.source;
+    changed = writeIfChanged(clerkBackendRuntimePath, source, result.changed) || changed;
+  }
+
+  {
+    let source = readFileSync(clerkBackendEsmRuntimePath, 'utf8');
+    const result = replaceOnce(
+      source,
+      'var runtime = {\n  crypto,',
+      'var runtime = {\n  crypto: crypto || globalThis.crypto,',
+      `${clerkBackendEsmRuntimePath} Clerk ESM runtime crypto fallback`,
+    );
+    source = result.source;
+    changed = writeIfChanged(clerkBackendEsmRuntimePath, source, result.changed) || changed;
+  }
+
+  return changed;
+}
+
 function patchClerkSharedKeys() {
   const fallbackSha1 = `function fallbackSha1(data) {
 \tconst bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -496,9 +535,10 @@ const wrapperChanged = patchWrapper();
 const clerkBackendChanged = patchClerkBackendRequest();
 const cryptoPolyfillChanged = patchCryptoPolyfill();
 const clerkBackendCookieSuffixChanged = patchClerkBackendCookieSuffix();
+const clerkBackendRuntimeCryptoChanged = patchClerkBackendRuntimeCrypto();
 const clerkSharedKeysChanged = patchClerkSharedKeys();
 const clerkKeylessChanged = patchClerkKeyless();
-const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged || clerkBackendCookieSuffixChanged || clerkSharedKeysChanged || clerkKeylessChanged;
+const changed = compilerChanged || wrapperChanged || clerkBackendChanged || cryptoPolyfillChanged || clerkBackendCookieSuffixChanged || clerkBackendRuntimeCryptoChanged || clerkSharedKeysChanged || clerkKeylessChanged;
 console.log(
   changed
     ? 'Installed EdgeOne NextRequest adapter.'
