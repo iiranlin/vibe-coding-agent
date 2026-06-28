@@ -1,4 +1,5 @@
 import { runCodingAgent } from './_agent';
+import type { ClerkAuthContext } from './_auth';
 import { AUTO_FIX_MAX_ATTEMPTS } from './_constants';
 import {
   appendTurn,
@@ -24,12 +25,51 @@ import { buildAutoFixPrompt } from './utils/_build-errors';
 import { debugLog } from './utils/_debug';
 import { normalizeRelPath } from './utils/_paths';
 import { sanitizeAssistantText } from './utils/_text';
+import {
+  ensureAppUserForClerkUser,
+  estimateTokensFromText,
+  finalizeTokenUsage,
+  reserveTokensForRun,
+  UsageConfigurationError,
+  UsagePermissionError,
+  type UsageReservation,
+} from '../lib/usage';
 
 const SANDBOX_EXTENSION_SECONDS = 1800;
 
 type SandboxWithTimeoutExtension = {
   extendTimeout?: (seconds: number) => unknown;
 };
+
+type ChatPipelineOptions = {
+  resetProject?: boolean;
+  auth?: ClerkAuthContext;
+};
+
+type FilePipelineOptions = {
+  auth?: ClerkAuthContext;
+};
+
+function hashUserScope(value: string) {
+  let first = 0x811c9dc5;
+  let second = 0x01000193;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first ^= code;
+    first = Math.imul(first, 0x01000193) >>> 0;
+    second ^= code + index;
+    second = Math.imul(second, 0x811c9dc5) >>> 0;
+  }
+  return `${first.toString(36)}${second.toString(36)}`;
+}
+
+function scopeConversationIdForUser(conversationId: string, clerkUserId?: string) {
+  if (!conversationId || !clerkUserId) {
+    return conversationId;
+  }
+  const prefix = `u_${hashUserScope(clerkUserId)}_`;
+  return conversationId.startsWith(prefix) ? conversationId : `${prefix}${conversationId}`;
+}
 
 function stripReturnedPreviewLinks(text: string, previewUrl?: string) {
   if (!text || !previewUrl) {
@@ -268,11 +308,50 @@ async function extendExistingSandboxTimeout(context: any) {
   }
 }
 
-export async function runFileReadPipeline(context: any): Promise<Response> {
+function getQuotaErrorReply(error: unknown) {
+  if (error instanceof UsageConfigurationError) {
+    return 'Usage quota database is not configured. Please configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
+  }
+  if (error instanceof UsagePermissionError) {
+    if (error.reason === 'insufficient_quota') {
+      return 'Your token quota is insufficient. Please contact an administrator to allocate more quota.';
+    }
+    if (error.reason === 'user_disabled') {
+      return 'Your account has been disabled. Please contact an administrator.';
+    }
+    return error.reason || 'Unable to verify token quota.';
+  }
+  return error instanceof Error ? error.message : 'Unable to verify token quota.';
+}
+
+function sendQuotaFailure(send: StreamSend, conversationId: string, error: unknown) {
+  const reply = getQuotaErrorReply(error);
+  send({
+    type: 'result',
+    data: {
+      ok: false,
+      conversation_id: conversationId,
+      reply,
+      error: reply,
+      build: { status: 'skipped' as BuildStatus },
+      preview: {},
+    },
+  });
+}
+
+function getBilledTokenFallback(message: string, reply: string) {
+  return estimateTokensFromText(`${message}\n${reply}`);
+}
+
+export async function runFileReadPipeline(
+  context: any,
+  options: FilePipelineOptions = {},
+): Promise<Response> {
   const contextConversationId = String(context.conversation_id || '');
   const pagesHeaderConversationId = getRequestHeader(context, 'makers-conversation-id');
   const headerConversationId = getRequestHeader(context, 'conversationId');
-  const conversationId = contextConversationId || pagesHeaderConversationId || headerConversationId;
+  const rawConversationId = contextConversationId || pagesHeaderConversationId || headerConversationId;
+  const conversationId = scopeConversationIdForUser(rawConversationId, options.auth?.clerkUserId);
   const conversationSource = contextConversationId
     ? 'context.conversation_id'
     : pagesHeaderConversationId
@@ -346,12 +425,13 @@ export async function runChatPipeline(
   context: any,
   message: string,
   send: StreamSend,
-  options: { resetProject?: boolean } = {},
+  options: ChatPipelineOptions = {},
 ) {
   const contextConversationId = String(context.conversation_id || '');
   const pagesHeaderConversationId = getRequestHeader(context, 'makers-conversation-id');
   const headerConversationId = getRequestHeader(context, 'conversationId');
-  const conversationId = contextConversationId || pagesHeaderConversationId || headerConversationId;
+  const rawConversationId = contextConversationId || pagesHeaderConversationId || headerConversationId;
+  const conversationId = scopeConversationIdForUser(rawConversationId, options.auth?.clerkUserId);
 
   if (!message) {
     send({
@@ -381,7 +461,75 @@ export async function runChatPipeline(
     return;
   }
 
-  await extendExistingSandboxTimeout(context);
+  const auth = options.auth;
+  if (!auth?.clerkUserId) {
+    send({
+      type: 'result',
+      data: {
+        ok: false,
+        conversation_id: conversationId,
+        reply: 'Authentication context is missing. Please sign in again.',
+        build: { status: 'skipped' as BuildStatus },
+        preview: {},
+      },
+    });
+    return;
+  }
+
+  let usageReservation: UsageReservation | null = null;
+  let usageFinalized = false;
+  try {
+    await ensureAppUserForClerkUser({
+      clerkUserId: auth.clerkUserId,
+      email: auth.email,
+      displayName: auth.displayName,
+    }, { context });
+    usageReservation = await reserveTokensForRun(auth.clerkUserId, conversationId, { context });
+    send({
+      type: 'quota',
+      data: {
+        reservedTokens: usageReservation.reservedTokens,
+        remainingTokens: usageReservation.remainingTokens,
+      },
+    });
+  } catch (error) {
+    sendQuotaFailure(send, conversationId, error);
+    return;
+  }
+
+  const finalizeUsageOnce = async (
+    actualTokens: number,
+    metadata: Record<string, unknown>,
+  ) => {
+    if (!usageReservation || usageFinalized) {
+      return;
+    }
+    try {
+      const user = await finalizeTokenUsage(usageReservation, actualTokens, metadata, { context });
+      usageFinalized = true;
+      send({
+        type: 'quota',
+        data: {
+          usedTokens: actualTokens,
+          remainingTokens: user.remainingTokens,
+          tokenQuota: user.tokenQuota,
+          tokenUsed: user.tokenUsed,
+        },
+      });
+    } catch (error) {
+      const message = getQuotaErrorReply(error);
+      send({
+        type: 'log',
+        phase: 'agent',
+        stream: 'stderr',
+        message,
+      });
+    }
+  };
+
+  let billedTokens = 0;
+  const executeReservedRun = async () => {
+    await extendExistingSandboxTimeout(context);
 
   send({
     type: 'status',
@@ -481,6 +629,7 @@ export async function runChatPipeline(
     forwardProgress,
     pushEarlyFileTree,
   );
+  billedTokens = modelResult.usageTokens || 0;
   const sanitizedModelOutput = modelResult.success && modelResult.output
     ? sanitizeAssistantText(modelResult.output)
     : '';
@@ -493,6 +642,9 @@ export async function runChatPipeline(
   const assistantReply = stripReturnedPreviewLinks(sanitizeAssistantText(
     modelOutput || fallbackReply
   ) || fallbackReply, state.previewUrl);
+  const getActualTokens = (replyText: string) => (
+    billedTokens > 0 ? billedTokens : getBilledTokenFallback(message, replyText)
+  );
 
   send({
     type: 'agent',
@@ -507,6 +659,11 @@ export async function runChatPipeline(
     await appendTurn(context, conversationId, 'user', message);
     await appendTurn(context, conversationId, 'assistant', assistantReply);
     await saveProjectState(context, conversationId, state);
+    await finalizeUsageOnce(getActualTokens(assistantReply), {
+      status: 'fatal',
+      error: modelResult.error || null,
+      usageSource: billedTokens > 0 ? 'sdk' : 'estimate',
+    });
 
     send({
       type: 'result',
@@ -540,6 +697,11 @@ export async function runChatPipeline(
     await appendTurn(context, conversationId, 'user', message);
     await appendTurn(context, conversationId, 'assistant', assistantReply);
     await saveProjectState(context, conversationId, state);
+    await finalizeUsageOnce(getActualTokens(assistantReply), {
+      status: modelResult.success ? 'success' : 'failed',
+      previewTouched: true,
+      usageSource: billedTokens > 0 ? 'sdk' : 'estimate',
+    });
 
     send({
       type: 'result',
@@ -561,6 +723,11 @@ export async function runChatPipeline(
   if (!modelResult.projectTouched) {
     await appendTurn(context, conversationId, 'user', message);
     await appendTurn(context, conversationId, 'assistant', assistantReply);
+    await finalizeUsageOnce(getActualTokens(assistantReply), {
+      status: modelResult.success ? 'success' : 'failed',
+      projectTouched: false,
+      usageSource: billedTokens > 0 ? 'sdk' : 'estimate',
+    });
 
     send({
       type: 'result',
@@ -586,6 +753,10 @@ export async function runChatPipeline(
     await appendTurn(context, conversationId, 'user', message);
     await appendTurn(context, conversationId, 'assistant', fatalReply);
     await saveProjectState(context, conversationId, state);
+    await finalizeUsageOnce(getActualTokens(fatalReply), {
+      status: 'build_fatal',
+      usageSource: billedTokens > 0 ? 'sdk' : 'estimate',
+    });
 
     send({
       type: 'result',
@@ -638,6 +809,7 @@ export async function runChatPipeline(
       forwardProgress,
       pushEarlyFileTree,
     );
+    billedTokens += autoFixResult.usageTokens || 0;
     autoFixReply = stripReturnedPreviewLinks(sanitizeAssistantText(
       autoFixResult.success && autoFixResult.output
         ? autoFixResult.output
@@ -662,6 +834,11 @@ export async function runChatPipeline(
       await appendTurn(context, conversationId, 'user', message);
       await appendTurn(context, conversationId, 'assistant', fatalReply);
       await saveProjectState(context, conversationId, state);
+      await finalizeUsageOnce(getActualTokens(fatalReply), {
+        status: 'auto_fix_build_fatal',
+        autoFixAttempts,
+        usageSource: billedTokens > 0 ? 'sdk' : 'estimate',
+      });
 
       send({
         type: 'result',
@@ -729,6 +906,12 @@ export async function runChatPipeline(
   await appendTurn(context, conversationId, 'user', message);
   await appendTurn(context, conversationId, 'assistant', reply);
   await saveProjectState(context, conversationId, state);
+  await finalizeUsageOnce(getActualTokens(reply), {
+    status: modelResult.success && build.status !== 'failed' ? 'success' : 'failed',
+    buildStatus: build.status,
+    autoFixAttempts,
+    usageSource: billedTokens > 0 ? 'sdk' : 'estimate',
+  });
 
   send({
     type: 'result',
@@ -752,4 +935,16 @@ export async function runChatPipeline(
       },
     },
   });
+  };
+
+  try {
+    return await executeReservedRun();
+  } finally {
+    if (!usageFinalized) {
+      await finalizeUsageOnce(billedTokens, {
+        status: 'aborted',
+        usageSource: billedTokens > 0 ? 'sdk' : 'release',
+      });
+    }
+  }
 }

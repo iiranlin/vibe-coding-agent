@@ -3,3 +3,11 @@ node_modules
 .next
 .DS_Store
 .env
+.env.local
+# clerk configuration (can include secrets)
+/.clerk/
+
+# Tencent Cloud EdgeOne
+.env
+.edgeone/*
+.tef_dist/*

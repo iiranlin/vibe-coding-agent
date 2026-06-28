@@ -22,8 +22,24 @@ Web Dev Agent turns natural-language requests into runnable web projects. For ea
 | `AI_GATEWAY_BASE_URL` | Yes | Gateway base URL. For Makers Models, use `https://ai-gateway.edgeone.link/v1`. |
 | `AI_GATEWAY_MODEL` | No | Model ID. Defaults to `@makers/minimax-m2.7` (a built-in Makers model). |
 | `WEB_DEV_AGENT_DEBUG` | No | Set to `true` or `1` to enable redacted server-side debug logs. Defaults to off. |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Yes | Clerk publishable key for browser auth and Clerk UI components. |
+| `CLERK_SECRET_KEY` | Yes | Clerk server secret key for authenticated Agent routes and the admin page. |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | No | Sign-in page path. `/sign-in` is suitable for this template. |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | No | Sign-up page path. `/sign-up` is suitable for this template. |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL` | No | Fallback redirect path after sign-in. |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` | No | Fallback redirect path after sign-up. |
+| `SUPABASE_URL` | Yes | Supabase project URL for the usage and permission database. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key for usage/permission RPC calls. |
+| `DEFAULT_USER_TOKEN_QUOTA` | No | Default token quota for regular users. |
+| `ADMIN_INITIAL_TOKEN_QUOTA` | No | Initial token quota for the first admin user. |
+| `RUN_TOKEN_RESERVE` | No | Token amount reserved before each Agent run. |
 
 This template follows the OpenAI-compatible standard — point these at Makers Models or any compatible provider.
+
+`Clerk is not configured` means the runtime is missing `CLERK_SECRET_KEY` or
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`. Local `.env.local` files are not deployed
+with the app; configure the same keys in the EdgeOne Makers console or with
+`edgeone makers env set` before deploying.
 
 ### How to get `AI_GATEWAY_API_KEY`
 
@@ -56,9 +72,11 @@ The agent prefers `AI_GATEWAY_*` variables. It also accepts Anthropic-compatible
 
 ```bash
 npm install
-cp .env.example .env
+cp .env.example .env.local
 edgeone makers dev
 ```
+
+After copying, fill in the real AI gateway, Clerk, and Supabase settings.
 
 Open `http://localhost:8088/agent-metrics` for the local observability panel.
 
