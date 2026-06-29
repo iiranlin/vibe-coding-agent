@@ -1,72 +1,84 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AuthError, requireClerkAuth } from './_auth';
+import { AuthError, requireSupabaseAuth } from './_auth';
 
-const clerkMocks = vi.hoisted(() => ({
-  authenticateRequest: vi.fn(),
-  getUser: vi.fn(),
+const authMocks = vi.hoisted(() => ({
+  createServerClient: vi.fn(),
+  getClaims: vi.fn(),
 }));
 
-vi.mock('@clerk/backend', () => ({
-  createClerkClient: () => ({
-    authenticateRequest: clerkMocks.authenticateRequest,
-    users: {
-      getUser: clerkMocks.getUser,
-    },
-  }),
+vi.mock('@supabase/ssr', () => ({
+  createServerClient: authMocks.createServerClient,
 }));
 
-describe('requireClerkAuth', () => {
+describe('requireSupabaseAuth', () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
   });
 
-  it('reports which Clerk environment variables are missing', async () => {
-    vi.stubEnv('CLERK_SECRET_KEY', '');
-    vi.stubEnv('NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY', '');
-    vi.stubEnv('CLERK_PUBLISHABLE_KEY', '');
-
-    await expect(requireClerkAuth({ env: {} })).rejects.toMatchObject({
+  it('reports which Supabase Auth environment variables are missing', async () => {
+    await expect(requireSupabaseAuth({ env: {} })).rejects.toMatchObject({
       name: 'AuthError',
       status: 500,
-      reason: 'Clerk is not configured. Missing environment variables: CLERK_SECRET_KEY, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY.',
+      reason: 'Supabase Auth is not configured. Missing environment variables: SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY.',
     } satisfies Partial<AuthError>);
   });
 
-  it('returns the authenticated Clerk profile used to initialize app users', async () => {
-    clerkMocks.authenticateRequest.mockResolvedValue({
-      isAuthenticated: true,
-      toAuth: () => ({
-        isAuthenticated: true,
-        userId: 'user_123',
-        sessionId: 'session_123',
-      }),
+  it('verifies a bearer JWT and returns its Supabase profile claims', async () => {
+    authMocks.getClaims.mockResolvedValue({
+      data: {
+        claims: {
+          sub: '2d3859ad-5ea7-4f78-a0f8-437ae7862fd2',
+          email: 'ada@example.com',
+          user_metadata: { full_name: 'Ada Lovelace' },
+        },
+      },
+      error: null,
     });
-    clerkMocks.getUser.mockResolvedValue({
-      id: 'user_123',
-      fullName: 'Ada Lovelace',
-      username: 'ada',
-      primaryEmailAddressId: 'email_123',
-      emailAddresses: [
-        { id: 'email_123', emailAddress: 'ada@example.com' },
-      ],
-    });
+    authMocks.createServerClient.mockReturnValue({ auth: { getClaims: authMocks.getClaims } });
 
-    await expect(requireClerkAuth({
+    await expect(requireSupabaseAuth({
       env: {
-        CLERK_SECRET_KEY: 'test-secret',
-        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: 'test-publishable',
+        NEXT_PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test',
       },
       request: {
-        method: 'POST',
-        url: 'https://example.com/chat',
-        headers: new Headers(),
+        headers: new Headers({ authorization: 'Bearer real.jwt.token' }),
       },
     })).resolves.toMatchObject({
-      clerkUserId: 'user_123',
+      supabaseUserId: '2d3859ad-5ea7-4f78-a0f8-437ae7862fd2',
+      systemUserId: 'supabase:2d3859ad-5ea7-4f78-a0f8-437ae7862fd2',
       email: 'ada@example.com',
       displayName: 'Ada Lovelace',
     });
-    expect(clerkMocks.getUser).toHaveBeenCalledWith('user_123');
+    expect(authMocks.getClaims).toHaveBeenCalledWith('real.jwt.token');
+  });
+
+  it('passes SSR cookies to Supabase when no bearer token is present', async () => {
+    authMocks.getClaims.mockResolvedValue({
+      data: { claims: { sub: 'user-123' } },
+      error: null,
+    });
+    authMocks.createServerClient.mockImplementation((_url, _key, options) => {
+      expect(options.cookies.getAll()).toEqual([
+        { name: 'sb-project-auth-token', value: 'cookie-value' },
+        { name: 'theme', value: 'dark' },
+      ]);
+      return { auth: { getClaims: authMocks.getClaims } };
+    });
+
+    await requireSupabaseAuth({
+      env: {
+        NEXT_PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test',
+      },
+      request: {
+        headers: new Headers({
+          cookie: 'sb-project-auth-token=cookie-value; theme=dark',
+        }),
+      },
+    });
+
+    expect(authMocks.getClaims).toHaveBeenCalledWith();
   });
 });

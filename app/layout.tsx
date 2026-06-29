@@ -1,4 +1,3 @@
-import { LocalizedClerkProvider } from './clerk-provider';
 import './globals.css';
 
 type Metadata = {
@@ -18,9 +17,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>
-        <LocalizedClerkProvider>{children}</LocalizedClerkProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

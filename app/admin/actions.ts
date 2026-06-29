@@ -1,7 +1,7 @@
 'use server';
 
-import { auth } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
+import { createClient } from '../../lib/supabase/server';
 import {
   updateUserQuotaForAdmin,
   type AppUserStatus,
@@ -12,7 +12,9 @@ function parseStatus(value: FormDataEntryValue | null): AppUserStatus {
 }
 
 export async function updateQuotaAction(formData: FormData) {
-  const { userId } = await auth();
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.getClaims();
+  const userId = !error && typeof data?.claims?.sub === 'string' ? data.claims.sub : '';
   if (!userId) {
     throw new Error('Authentication required.');
   }

@@ -1,11 +1,11 @@
-import { auth, clerkClient } from '@clerk/nextjs/server';
 import {
-  ensureAppUserForClerkUser,
+  ensureAppUser,
   listUsersForAdmin,
   UsageConfigurationError,
   UsagePermissionError,
   type AppUser,
 } from '../../lib/usage';
+import { createClient } from '../../lib/supabase/server';
 import { updateQuotaAction } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -14,24 +14,14 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value);
 }
 
-function getPrimaryEmail(user: Awaited<ReturnType<Awaited<ReturnType<typeof clerkClient>>['users']['getUser']>>) {
-  return user.emailAddresses.find((email) => email.id === user.primaryEmailAddressId)?.emailAddress
-    || user.emailAddresses[0]?.emailAddress
-    || null;
-}
-
-function getDisplayName(user: Awaited<ReturnType<Awaited<ReturnType<typeof clerkClient>>['users']['getUser']>>) {
-  return user.fullName || user.username || getPrimaryEmail(user) || user.id;
-}
-
 function SetupNotice() {
   return (
     <main className="min-h-screen bg-[#0a0d0b] px-6 py-10 text-[#ecf8f2]">
       <div className="mx-auto max-w-3xl rounded-lg border border-[#f2c779]/30 bg-[#141917] p-6">
         <h1 className="text-2xl font-semibold">权限数据库未配置</h1>
         <p className="mt-3 text-sm leading-6 text-[#b5c4be]">
-          请先在 EdgeOne 环境变量中配置 <code>SUPABASE_URL</code> 和
-          <code> SUPABASE_SERVICE_ROLE_KEY</code>，并执行
+          请先在 EdgeOne 环境变量中配置 Supabase URL、publishable key 和
+          服务端 secret key，并执行
           <code> db/migrations/usage_permissions.sql</code>。
         </p>
       </div>
@@ -82,7 +72,7 @@ function UserRow({ user }: { user: AppUser }) {
     <tr className="border-t border-white/10">
       <td className="px-4 py-4 align-top">
         <div className="font-medium text-white">{user.displayName || user.email || '未命名用户'}</div>
-        <div className="mt-1 max-w-[260px] truncate text-xs text-[#84938d]">{user.email || user.clerkUserId}</div>
+        <div className="mt-1 max-w-[260px] truncate text-xs text-[#84938d]">{user.email || user.id}</div>
       </td>
       <td className="px-4 py-4 align-top text-sm">
         <span className="rounded-full border border-white/10 px-2 py-1 text-xs text-[#dff8ef]">
@@ -127,18 +117,23 @@ function UserRow({ user }: { user: AppUser }) {
 }
 
 export default async function AdminPage() {
-  const { userId } = await auth();
-  if (!userId) {
-    return <SignedOut />;
-  }
-
   try {
-    const client = await clerkClient();
-    const clerkUser = await client.users.getUser(userId);
-    const currentUser = await ensureAppUserForClerkUser({
-      clerkUserId: userId,
-      email: getPrimaryEmail(clerkUser),
-      displayName: getDisplayName(clerkUser),
+    const supabase = await createClient();
+    const { data, error } = await supabase.auth.getClaims();
+    const claims = !error ? data?.claims : null;
+    const userId = typeof claims?.sub === 'string' ? claims.sub : '';
+    if (!userId) {
+      return <SignedOut />;
+    }
+    const metadata = claims?.user_metadata && typeof claims.user_metadata === 'object'
+      ? claims.user_metadata as Record<string, unknown>
+      : {};
+    const metadataName = metadata.full_name || metadata.name || metadata.display_name;
+    const email = typeof claims?.email === 'string' ? claims.email : null;
+    const currentUser = await ensureAppUser({
+      userId,
+      email,
+      displayName: typeof metadataName === 'string' ? metadataName : email,
       locale: 'zh',
     });
 

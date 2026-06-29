@@ -1,5 +1,5 @@
 import { runCodingAgent } from './_agent';
-import type { ClerkAuthContext } from './_auth';
+import type { SupabaseAuthContext } from './_auth';
 import { AUTO_FIX_MAX_ATTEMPTS } from './_constants';
 import {
   appendTurn,
@@ -26,7 +26,7 @@ import { debugLog } from './utils/_debug';
 import { normalizeRelPath } from './utils/_paths';
 import { sanitizeAssistantText } from './utils/_text';
 import {
-  ensureAppUserForClerkUser,
+  ensureAppUser,
   estimateTokensFromText,
   finalizeTokenUsage,
   reserveTokensForRun,
@@ -43,11 +43,11 @@ type SandboxWithTimeoutExtension = {
 
 type ChatPipelineOptions = {
   resetProject?: boolean;
-  auth?: ClerkAuthContext;
+  auth?: SupabaseAuthContext;
 };
 
 type FilePipelineOptions = {
-  auth?: ClerkAuthContext;
+  auth?: SupabaseAuthContext;
 };
 
 function hashUserScope(value: string) {
@@ -63,11 +63,11 @@ function hashUserScope(value: string) {
   return `${first.toString(36)}${second.toString(36)}`;
 }
 
-function scopeConversationIdForUser(conversationId: string, clerkUserId?: string) {
-  if (!conversationId || !clerkUserId) {
+function scopeConversationIdForUser(conversationId: string, userId?: string) {
+  if (!conversationId || !userId) {
     return conversationId;
   }
-  const prefix = `u_${hashUserScope(clerkUserId)}_`;
+  const prefix = `u_${hashUserScope(userId)}_`;
   return conversationId.startsWith(prefix) ? conversationId : `${prefix}${conversationId}`;
 }
 
@@ -351,7 +351,7 @@ export async function runFileReadPipeline(
   const pagesHeaderConversationId = getRequestHeader(context, 'makers-conversation-id');
   const headerConversationId = getRequestHeader(context, 'conversationId');
   const rawConversationId = contextConversationId || pagesHeaderConversationId || headerConversationId;
-  const conversationId = scopeConversationIdForUser(rawConversationId, options.auth?.clerkUserId);
+  const conversationId = scopeConversationIdForUser(rawConversationId, options.auth?.userId);
   const conversationSource = contextConversationId
     ? 'context.conversation_id'
     : pagesHeaderConversationId
@@ -431,7 +431,7 @@ export async function runChatPipeline(
   const pagesHeaderConversationId = getRequestHeader(context, 'makers-conversation-id');
   const headerConversationId = getRequestHeader(context, 'conversationId');
   const rawConversationId = contextConversationId || pagesHeaderConversationId || headerConversationId;
-  const conversationId = scopeConversationIdForUser(rawConversationId, options.auth?.clerkUserId);
+  const conversationId = scopeConversationIdForUser(rawConversationId, options.auth?.userId);
 
   if (!message) {
     send({
@@ -462,7 +462,7 @@ export async function runChatPipeline(
   }
 
   const auth = options.auth;
-  if (!auth?.clerkUserId) {
+  if (!auth?.userId) {
     send({
       type: 'result',
       data: {
@@ -479,12 +479,12 @@ export async function runChatPipeline(
   let usageReservation: UsageReservation | null = null;
   let usageFinalized = false;
   try {
-    await ensureAppUserForClerkUser({
-      clerkUserId: auth.clerkUserId,
+    await ensureAppUser({
+      userId: auth.userId,
       email: auth.email,
       displayName: auth.displayName,
     }, { context });
-    usageReservation = await reserveTokensForRun(auth.clerkUserId, conversationId, { context });
+    usageReservation = await reserveTokensForRun(auth.userId, conversationId, { context });
     send({
       type: 'quota',
       data: {

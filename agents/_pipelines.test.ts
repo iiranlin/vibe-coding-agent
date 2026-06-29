@@ -8,7 +8,7 @@ const memoryMocks = vi.hoisted(() => ({
 }));
 
 const usageMocks = vi.hoisted(() => ({
-  ensureAppUserForClerkUser: vi.fn(),
+  ensureAppUser: vi.fn(),
   reserveTokensForRun: vi.fn(),
   finalizeTokenUsage: vi.fn(),
 }));
@@ -16,7 +16,7 @@ const usageMocks = vi.hoisted(() => ({
 vi.mock('./_memory', () => memoryMocks);
 vi.mock('../lib/usage', async (importOriginal) => ({
   ...await importOriginal<typeof import('../lib/usage')>(),
-  ensureAppUserForClerkUser: usageMocks.ensureAppUserForClerkUser,
+  ensureAppUser: usageMocks.ensureAppUser,
   reserveTokensForRun: usageMocks.reserveTokensForRun,
   finalizeTokenUsage: usageMocks.finalizeTokenUsage,
 }));
@@ -26,10 +26,10 @@ import { runChatPipeline } from './_pipelines';
 describe('runChatPipeline usage reservations', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    usageMocks.ensureAppUserForClerkUser.mockResolvedValue({});
+    usageMocks.ensureAppUser.mockResolvedValue({});
     usageMocks.reserveTokensForRun.mockResolvedValue({
       eventId: 'event_123',
-      clerkUserId: 'user_123',
+      userId: '2d3859ad-5ea7-4f78-a0f8-437ae7862fd2',
       reservedTokens: 20_000,
       remainingTokens: 80_000,
     });
@@ -49,9 +49,9 @@ describe('runChatPipeline usage reservations', () => {
       vi.fn(),
       {
         auth: {
-          clerkUserId: 'user_123',
-          systemUserId: 'clerk:user_123',
-          userId: 'user_123',
+          supabaseUserId: '2d3859ad-5ea7-4f78-a0f8-437ae7862fd2',
+          systemUserId: 'supabase:2d3859ad-5ea7-4f78-a0f8-437ae7862fd2',
+          userId: '2d3859ad-5ea7-4f78-a0f8-437ae7862fd2',
         },
       },
     )).rejects.toThrow('state unavailable');

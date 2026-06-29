@@ -4,9 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "postinstall": "node scripts/write-edgeone-clerk-env.mjs && node scripts/patch-edgeone-next-request.mjs",
-    "prebuild": "node scripts/write-edgeone-clerk-env.mjs && node scripts/patch-edgeone-next-request.mjs",
-    "predev": "node scripts/write-edgeone-clerk-env.mjs && node scripts/patch-edgeone-next-request.mjs",
     "dev": "next dev",
     "build": "next build",
     "test": "vitest run",
@@ -15,9 +12,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.143",
     "@anthropic-ai/sdk": "latest",
-    "@clerk/backend": "^3.8.4",
-    "@clerk/localizations": "^4.11.0",
-    "@clerk/nextjs": "^7.5.9",
+    "@supabase/ssr": "^0.12.0",
+    "@supabase/supabase-js": "^2.108.2",
     "next": "^16.2.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
