@@ -1,7 +1,7 @@
 'use server';
 
 import { auth } from '@clerk/nextjs/server';
-import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 import {
   updateUserQuotaForAdmin,
   type AppUserStatus,
@@ -29,5 +29,5 @@ export async function updateQuotaAction(formData: FormData) {
   }
 
   await updateUserQuotaForAdmin(userId, targetUserId, Math.floor(tokenQuota), status);
-  revalidatePath('/admin');
+  redirect('/admin');
 }
