@@ -1,10 +1,10 @@
 'use client';
 
 import { FormEvent, memo, useEffect, useMemo, useRef, useState } from 'react';
-import { SignInButton, SignUpButton, UserButton, useAuth, useClerk } from '@clerk/nextjs';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../agents/utils/_text';
+import { signOut } from './auth/actions';
 import {
   LANGUAGE_CHANGE_EVENT,
   LANGUAGE_STORAGE_KEY,
@@ -169,6 +169,7 @@ const TRANSLATIONS = {
       signInRequired: '请先登录后再使用 AI 构建功能。',
       signedOutHint: '登录后即可构建项目、查看预览和浏览沙箱文件。',
       admin: '管理',
+      signOut: '退出',
     },
     home: {
       titleBefore: '今天想',
@@ -283,6 +284,7 @@ const TRANSLATIONS = {
       signInRequired: 'Please sign in before using the AI build workflow.',
       signedOutHint: 'Sign in to build projects, view previews, and browse sandbox files.',
       admin: 'Admin',
+      signOut: 'Sign out',
     },
     home: {
       titleBefore: 'What will you',
@@ -456,8 +458,7 @@ function getAssistantScrollSignature(message: ChatMessage) {
 }
 
 export default function Home() {
-  const { isLoaded, isSignedIn } = useAuth();
-  const { openSignIn } = useClerk();
+  const [authStatus, setAuthStatus] = useState<'loading' | 'signed-in' | 'signed-out'>('loading');
   const [language, setLanguage] = useState<Locale>('zh');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -486,6 +487,9 @@ export default function Home() {
   const showProcessThinkingRef = useRef(true);
 
   const t = TRANSLATIONS[language];
+  const isLoaded = authStatus !== 'loading';
+  const isSignedIn = authStatus === 'signed-in';
+  const openSignIn = () => window.location.assign('/sign-in');
   const canSend = input.trim().length > 0 && !loading && isLoaded;
   const requiresSignIn = isLoaded && !isSignedIn;
   const hasWorkspace = messages.length > 0 || Boolean(preview) || Boolean(build);
@@ -504,6 +508,25 @@ export default function Home() {
 
   useEffect(() => {
     setConversationId(getOrCreateCachedConversationId());
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/auth/session', { credentials: 'include', cache: 'no-store' })
+      .then(async (response) => response.json() as Promise<{ signedIn?: boolean }>)
+      .then((session) => {
+        if (active) {
+          setAuthStatus(session.signedIn ? 'signed-in' : 'signed-out');
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setAuthStatus('signed-out');
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -1002,22 +1025,18 @@ export default function Home() {
           <div className="flex shrink-0 items-center gap-2">
             {requiresSignIn && (
               <>
-                <SignInButton mode="modal">
-                  <button
-                    type="button"
-                    className="rounded-full border border-white/15 bg-[#141917]/90 px-3 py-1.5 text-xs font-semibold text-[#dff8ef] shadow-lg shadow-black/20 transition hover:border-[#7bd8b4] hover:text-white"
-                  >
-                    {t.auth.signIn}
-                  </button>
-                </SignInButton>
-                <SignUpButton mode="modal">
-                  <button
-                    type="button"
-                    className="rounded-full bg-[#f2c779] px-3.5 py-1.5 text-xs font-semibold text-[#21170a] shadow-lg shadow-[#f2c779]/15 transition hover:bg-[#ffd98a]"
-                  >
-                    {t.auth.signUp}
-                  </button>
-                </SignUpButton>
+                <a
+                  href="/sign-in"
+                  className="rounded-full border border-white/15 bg-[#141917]/90 px-3 py-1.5 text-xs font-semibold text-[#dff8ef] shadow-lg shadow-black/20 transition hover:border-[#7bd8b4] hover:text-white"
+                >
+                  {t.auth.signIn}
+                </a>
+                <a
+                  href="/sign-up"
+                  className="rounded-full bg-[#f2c779] px-3.5 py-1.5 text-xs font-semibold text-[#21170a] shadow-lg shadow-[#f2c779]/15 transition hover:bg-[#ffd98a]"
+                >
+                  {t.auth.signUp}
+                </a>
               </>
             )}
             {isLoaded && isSignedIn && (
@@ -1028,7 +1047,14 @@ export default function Home() {
                 >
                   {t.auth.admin}
                 </a>
-                <UserButton />
+                <form action={signOut}>
+                  <button
+                    type="submit"
+                    className="rounded-full border border-white/15 bg-[#141917]/90 px-3 py-1.5 text-xs font-semibold text-[#dff8ef] shadow-lg shadow-black/20 transition hover:border-red-300 hover:text-white"
+                  >
+                    {t.auth.signOut}
+                  </button>
+                </form>
               </>
             )}
             <button

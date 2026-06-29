@@ -22,24 +22,25 @@ Web Dev Agent turns natural-language requests into runnable web projects. For ea
 | `AI_GATEWAY_BASE_URL` | Yes | Gateway base URL. For Makers Models, use `https://ai-gateway.edgeone.link/v1`. |
 | `AI_GATEWAY_MODEL` | No | Model ID. Defaults to `@makers/minimax-m2.7` (a built-in Makers model). |
 | `WEB_DEV_AGENT_DEBUG` | No | Set to `true` or `1` to enable redacted server-side debug logs. Defaults to off. |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Yes | Clerk publishable key for browser auth and Clerk UI components. |
-| `CLERK_SECRET_KEY` | Yes | Clerk server secret key for authenticated Agent routes and the admin page. |
-| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | No | Sign-in page path. `/sign-in` is suitable for this template. |
-| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | No | Sign-up page path. `/sign-up` is suitable for this template. |
-| `NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL` | No | Fallback redirect path after sign-in. |
-| `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` | No | Fallback redirect path after sign-up. |
-| `SUPABASE_URL` | Yes | Supabase project URL for the usage and permission database. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key for usage/permission RPC calls. |
+| `SUPABASE_URL` | Yes | Supabase project URL used by Auth and the usage database. |
+| `SUPABASE_PUBLISHABLE_KEY` | Yes | Supabase publishable key used to create and verify user sessions. |
+| `SUPABASE_SECRET_KEY` | Yes* | Server-only Supabase secret key for usage/permission RPC calls. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes* | Legacy alternative to `SUPABASE_SECRET_KEY`; never expose it to the browser. |
 | `DEFAULT_USER_TOKEN_QUOTA` | No | Default token quota for regular users. |
 | `ADMIN_INITIAL_TOKEN_QUOTA` | No | Initial token quota for the first admin user. |
 | `RUN_TOKEN_RESERVE` | No | Token amount reserved before each Agent run. |
 
 This template follows the OpenAI-compatible standard — point these at Makers Models or any compatible provider.
 
-`Clerk is not configured` means the runtime is missing `CLERK_SECRET_KEY` or
-`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`. Local `.env.local` files are not deployed
-with the app; configure the same keys in the EdgeOne Makers console or with
-`edgeone makers env set` before deploying.
+`SUPABASE_SECRET_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are alternatives; configure
+exactly one of them. Local `.env.local` files are not deployed with the app, so
+configure the same server variables in EdgeOne Makers before deploying.
+
+Email confirmation and password reset messages are sent by Supabase Auth. For
+production, configure Custom SMTP in the Supabase dashboard; application `.env`
+SMTP values do not configure the hosted Auth service automatically. Run
+`db/migrations/usage_permissions.sql` once before deployment. It intentionally
+recreates the quota tables and removes previous identity-bound quota data.
 
 ### How to get `AI_GATEWAY_API_KEY`
 
@@ -76,7 +77,7 @@ cp .env.example .env.local
 edgeone makers dev
 ```
 
-After copying, fill in the real AI gateway, Clerk, and Supabase settings.
+After copying, fill in the real AI gateway and Supabase settings.
 
 Open `http://localhost:8088/agent-metrics` for the local observability panel.
 

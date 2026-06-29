@@ -1,13 +1,6 @@
--- ============================================================================
--- usage_permissions.sql
--- ----------------------------------------------------------------------------
--- Clerk user binding, admin role bootstrap, token quota allocation, and usage
--- ledger for the Vibe Coding Agent.
---
--- Run this in Supabase SQL Editor or any compatible Postgres database.
--- The application calls the RPC functions below with a server-only service role
--- key; do not expose that key to the browser.
--- ============================================================================
+-- Supabase Auth user binding, admin bootstrap, quota allocation, and usage ledger.
+-- This migration intentionally removes the previous identity-bound quota data.
+-- Run it once in the Supabase SQL Editor before deploying this version.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -27,9 +20,18 @@ BEGIN
   END IF;
 END $$;
 
-CREATE TABLE IF NOT EXISTS app_users (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  clerk_user_id TEXT NOT NULL CONSTRAINT app_users_clerk_user_id_key UNIQUE,
+DROP FUNCTION IF EXISTS app_finalize_usage(TEXT, UUID, BIGINT, JSONB);
+DROP FUNCTION IF EXISTS app_reserve_tokens(TEXT, BIGINT, TEXT, JSONB);
+DROP FUNCTION IF EXISTS app_admin_update_user_quota(TEXT, UUID, BIGINT, app_user_status);
+DROP FUNCTION IF EXISTS app_list_users(TEXT);
+DROP FUNCTION IF EXISTS app_assert_admin(TEXT);
+DROP FUNCTION IF EXISTS app_get_user(TEXT);
+DROP FUNCTION IF EXISTS app_ensure_user(TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT);
+DROP TABLE IF EXISTS usage_events CASCADE;
+DROP TABLE IF EXISTS app_users CASCADE;
+
+CREATE TABLE app_users (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT,
   display_name TEXT,
   locale TEXT NOT NULL DEFAULT 'zh',
@@ -42,13 +44,9 @@ CREATE TABLE IF NOT EXISTS app_users (
   last_seen_at TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS app_users_role_idx ON app_users (role);
-CREATE INDEX IF NOT EXISTS app_users_created_at_idx ON app_users (created_at DESC);
-
-CREATE TABLE IF NOT EXISTS usage_events (
+CREATE TABLE usage_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-  clerk_user_id TEXT NOT NULL,
   event_type usage_event_type NOT NULL,
   status usage_event_status NOT NULL DEFAULT 'reserved',
   tokens BIGINT NOT NULL CHECK (tokens >= 0),
@@ -60,17 +58,16 @@ CREATE TABLE IF NOT EXISTS usage_events (
   finalized_at TIMESTAMPTZ
 );
 
+CREATE INDEX app_users_role_idx ON app_users (role);
+CREATE INDEX app_users_created_at_idx ON app_users (created_at DESC);
+CREATE INDEX usage_events_user_created_idx ON usage_events (user_id, created_at DESC);
+CREATE INDEX usage_events_conversation_idx ON usage_events (conversation_id);
+
 ALTER TABLE app_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_events ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE app_users, usage_events FROM PUBLIC, anon, authenticated;
 GRANT ALL ON TABLE app_users, usage_events TO service_role;
-
-CREATE INDEX IF NOT EXISTS usage_events_user_created_idx
-  ON usage_events (user_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS usage_events_conversation_idx
-  ON usage_events (conversation_id);
 
 CREATE OR REPLACE FUNCTION app_touch_updated_at()
 RETURNS TRIGGER
@@ -82,7 +79,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS app_users_touch_updated_at ON app_users;
 CREATE TRIGGER app_users_touch_updated_at
 BEFORE UPDATE ON app_users
 FOR EACH ROW
@@ -91,7 +87,6 @@ EXECUTE FUNCTION app_touch_updated_at();
 CREATE OR REPLACE FUNCTION app_user_projection(p_user app_users)
 RETURNS TABLE (
   id UUID,
-  clerk_user_id TEXT,
   email TEXT,
   display_name TEXT,
   locale TEXT,
@@ -109,7 +104,6 @@ STABLE
 AS $$
   SELECT
     p_user.id,
-    p_user.clerk_user_id,
     p_user.email,
     p_user.display_name,
     p_user.locale,
@@ -124,7 +118,7 @@ AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION app_ensure_user(
-  p_clerk_user_id TEXT,
+  p_user_id UUID,
   p_email TEXT DEFAULT NULL,
   p_display_name TEXT DEFAULT NULL,
   p_locale TEXT DEFAULT 'zh',
@@ -133,7 +127,6 @@ CREATE OR REPLACE FUNCTION app_ensure_user(
 )
 RETURNS TABLE (
   id UUID,
-  clerk_user_id TEXT,
   email TEXT,
   display_name TEXT,
   locale TEXT,
@@ -153,14 +146,14 @@ AS $$
 DECLARE
   v_user app_users%ROWTYPE;
 BEGIN
-  IF p_clerk_user_id IS NULL OR BTRIM(p_clerk_user_id) = '' THEN
-    RAISE EXCEPTION 'missing_clerk_user_id';
+  IF p_user_id IS NULL THEN
+    RAISE EXCEPTION 'missing_user_id';
   END IF;
 
   PERFORM pg_advisory_xact_lock(hashtext('vibe_agent_first_admin_lock'));
 
   INSERT INTO app_users AS target (
-    clerk_user_id,
+    id,
     email,
     display_name,
     locale,
@@ -168,14 +161,14 @@ BEGIN
     last_seen_at
   )
   VALUES (
-    p_clerk_user_id,
+    p_user_id,
     NULLIF(p_email, ''),
     NULLIF(p_display_name, ''),
     COALESCE(NULLIF(p_locale, ''), 'zh'),
     GREATEST(0, p_default_token_quota),
     NOW()
   )
-  ON CONFLICT ON CONSTRAINT app_users_clerk_user_id_key DO UPDATE SET
+  ON CONFLICT ON CONSTRAINT app_users_pkey DO UPDATE SET
     email = COALESCE(NULLIF(EXCLUDED.email, ''), target.email),
     display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), target.display_name),
     locale = COALESCE(NULLIF(EXCLUDED.locale, ''), target.locale),
@@ -198,10 +191,9 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION app_get_user(p_clerk_user_id TEXT)
+CREATE OR REPLACE FUNCTION app_get_user(p_user_id UUID)
 RETURNS TABLE (
   id UUID,
-  clerk_user_id TEXT,
   email TEXT,
   display_name TEXT,
   locale TEXT,
@@ -219,13 +211,13 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
   SELECT p.*
-  FROM app_users u
-  CROSS JOIN LATERAL app_user_projection(u) p
-  WHERE u.clerk_user_id = p_clerk_user_id
+  FROM app_users AS u
+  CROSS JOIN LATERAL app_user_projection(u) AS p
+  WHERE u.id = p_user_id
   LIMIT 1;
 $$;
 
-CREATE OR REPLACE FUNCTION app_assert_admin(p_admin_clerk_user_id TEXT)
+CREATE OR REPLACE FUNCTION app_assert_admin(p_admin_user_id UUID)
 RETURNS app_users
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -236,7 +228,7 @@ DECLARE
 BEGIN
   SELECT * INTO v_admin
   FROM app_users AS u
-  WHERE u.clerk_user_id = p_admin_clerk_user_id
+  WHERE u.id = p_admin_user_id
   LIMIT 1;
 
   IF NOT FOUND OR v_admin.status <> 'active' OR v_admin.role <> 'admin' THEN
@@ -247,10 +239,9 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION app_list_users(p_admin_clerk_user_id TEXT)
+CREATE OR REPLACE FUNCTION app_list_users(p_admin_user_id UUID)
 RETURNS TABLE (
   id UUID,
-  clerk_user_id TEXT,
   email TEXT,
   display_name TEXT,
   locale TEXT,
@@ -268,25 +259,24 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 BEGIN
-  PERFORM app_assert_admin(p_admin_clerk_user_id);
+  PERFORM app_assert_admin(p_admin_user_id);
 
   RETURN QUERY
   SELECT p.*
-  FROM app_users u
-  CROSS JOIN LATERAL app_user_projection(u) p
+  FROM app_users AS u
+  CROSS JOIN LATERAL app_user_projection(u) AS p
   ORDER BY u.created_at DESC;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION app_admin_update_user_quota(
-  p_admin_clerk_user_id TEXT,
+  p_admin_user_id UUID,
   p_target_user_id UUID,
   p_token_quota BIGINT,
   p_status app_user_status DEFAULT 'active'
 )
 RETURNS TABLE (
   id UUID,
-  clerk_user_id TEXT,
   email TEXT,
   display_name TEXT,
   locale TEXT,
@@ -306,7 +296,7 @@ AS $$
 DECLARE
   v_user app_users%ROWTYPE;
 BEGIN
-  PERFORM app_assert_admin(p_admin_clerk_user_id);
+  PERFORM app_assert_admin(p_admin_user_id);
 
   UPDATE app_users AS u
   SET
@@ -321,7 +311,6 @@ BEGIN
 
   INSERT INTO usage_events (
     user_id,
-    clerk_user_id,
     event_type,
     status,
     tokens,
@@ -330,12 +319,11 @@ BEGIN
   )
   VALUES (
     v_user.id,
-    v_user.clerk_user_id,
     'adjust',
     'finalized',
     0,
     jsonb_build_object(
-      'adminClerkUserId', p_admin_clerk_user_id,
+      'adminUserId', p_admin_user_id,
       'tokenQuota', p_token_quota,
       'status', p_status
     ),
@@ -347,7 +335,7 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION app_reserve_tokens(
-  p_clerk_user_id TEXT,
+  p_user_id UUID,
   p_tokens BIGINT,
   p_conversation_id TEXT DEFAULT NULL,
   p_metadata JSONB DEFAULT '{}'::jsonb
@@ -370,7 +358,7 @@ DECLARE
 BEGIN
   SELECT * INTO v_user
   FROM app_users AS u
-  WHERE u.clerk_user_id = p_clerk_user_id
+  WHERE u.id = p_user_id
   FOR UPDATE;
 
   IF NOT FOUND THEN
@@ -395,7 +383,6 @@ BEGIN
 
   INSERT INTO usage_events (
     user_id,
-    clerk_user_id,
     event_type,
     status,
     tokens,
@@ -405,7 +392,6 @@ BEGIN
   )
   VALUES (
     v_user.id,
-    v_user.clerk_user_id,
     'reserve',
     'reserved',
     v_tokens,
@@ -420,14 +406,13 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION app_finalize_usage(
-  p_clerk_user_id TEXT,
+  p_user_id UUID,
   p_event_id UUID,
   p_actual_tokens BIGINT,
   p_metadata JSONB DEFAULT '{}'::jsonb
 )
 RETURNS TABLE (
   id UUID,
-  clerk_user_id TEXT,
   email TEXT,
   display_name TEXT,
   locale TEXT,
@@ -453,7 +438,7 @@ BEGIN
   SELECT * INTO v_event
   FROM usage_events AS e
   WHERE e.id = p_event_id
-    AND e.clerk_user_id = p_clerk_user_id
+    AND e.user_id = p_user_id
   FOR UPDATE;
 
   IF NOT FOUND THEN
@@ -497,20 +482,20 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION app_touch_updated_at() FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION app_user_projection(app_users) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION app_ensure_user(TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION app_get_user(TEXT) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION app_assert_admin(TEXT) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION app_list_users(TEXT) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION app_admin_update_user_quota(TEXT, UUID, BIGINT, app_user_status) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION app_reserve_tokens(TEXT, BIGINT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION app_finalize_usage(TEXT, UUID, BIGINT, JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION app_ensure_user(UUID, TEXT, TEXT, TEXT, BIGINT, BIGINT) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION app_get_user(UUID) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION app_assert_admin(UUID) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION app_list_users(UUID) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION app_admin_update_user_quota(UUID, UUID, BIGINT, app_user_status) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION app_reserve_tokens(UUID, BIGINT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION app_finalize_usage(UUID, UUID, BIGINT, JSONB) FROM PUBLIC, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION app_touch_updated_at() TO service_role;
 GRANT EXECUTE ON FUNCTION app_user_projection(app_users) TO service_role;
-GRANT EXECUTE ON FUNCTION app_ensure_user(TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT) TO service_role;
-GRANT EXECUTE ON FUNCTION app_get_user(TEXT) TO service_role;
-GRANT EXECUTE ON FUNCTION app_assert_admin(TEXT) TO service_role;
-GRANT EXECUTE ON FUNCTION app_list_users(TEXT) TO service_role;
-GRANT EXECUTE ON FUNCTION app_admin_update_user_quota(TEXT, UUID, BIGINT, app_user_status) TO service_role;
-GRANT EXECUTE ON FUNCTION app_reserve_tokens(TEXT, BIGINT, TEXT, JSONB) TO service_role;
-GRANT EXECUTE ON FUNCTION app_finalize_usage(TEXT, UUID, BIGINT, JSONB) TO service_role;
+GRANT EXECUTE ON FUNCTION app_ensure_user(UUID, TEXT, TEXT, TEXT, BIGINT, BIGINT) TO service_role;
+GRANT EXECUTE ON FUNCTION app_get_user(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION app_assert_admin(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION app_list_users(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION app_admin_update_user_quota(UUID, UUID, BIGINT, app_user_status) TO service_role;
+GRANT EXECUTE ON FUNCTION app_reserve_tokens(UUID, BIGINT, TEXT, JSONB) TO service_role;
+GRANT EXECUTE ON FUNCTION app_finalize_usage(UUID, UUID, BIGINT, JSONB) TO service_role;

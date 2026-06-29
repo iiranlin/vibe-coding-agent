@@ -7,15 +7,27 @@ const migrationSql = readFileSync(
 );
 
 describe('usage permissions migration', () => {
-  it('qualifies DML column references that can collide with RETURNS TABLE variables', () => {
-    expect(migrationSql).toContain(
-      'ON CONFLICT ON CONSTRAINT app_users_clerk_user_id_key',
+  it('creates enum types before using them in legacy function signatures', () => {
+    expect(migrationSql.indexOf("CREATE TYPE app_user_status")).toBeLessThan(
+      migrationSql.indexOf('DROP FUNCTION IF EXISTS app_admin_update_user_quota'),
     );
-    expect(migrationSql).not.toMatch(/ON CONFLICT\s*\(clerk_user_id\)/);
+  });
+
+  it('qualifies DML column references that can collide with RETURNS TABLE variables', () => {
+    expect(migrationSql).toContain('ON CONFLICT ON CONSTRAINT app_users_pkey');
     expect(migrationSql).not.toMatch(/FROM app_users\s+WHERE/);
     expect(migrationSql).not.toMatch(/UPDATE app_users\s+SET/);
     expect(migrationSql).not.toMatch(/FROM usage_events\s+WHERE/);
     expect(migrationSql).not.toMatch(/UPDATE usage_events\s+SET/);
+  });
+
+  it('uses Supabase auth user ids without retaining legacy identity bindings', () => {
+    expect(migrationSql.toLowerCase()).not.toContain(['cl', 'erk'].join(''));
+    expect(migrationSql).toMatch(
+      /id UUID PRIMARY KEY REFERENCES auth\.users\(id\) ON DELETE CASCADE/,
+    );
+    expect(migrationSql).toContain('CREATE OR REPLACE FUNCTION app_ensure_user(\n  p_user_id UUID');
+    expect(migrationSql).toContain('CREATE OR REPLACE FUNCTION app_reserve_tokens(\n  p_user_id UUID');
   });
 
   it('keeps quota tables private to the server role', () => {

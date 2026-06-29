@@ -2,12 +2,12 @@ import {
   createStreamResponse,
   runChatPipeline,
 } from './_pipelines';
-import { AuthError, authErrorResponse, requireClerkAuth } from './_auth';
+import { AuthError, authErrorResponse, requireSupabaseAuth } from './_auth';
 
 export async function onRequest(context: any) {
   let auth;
   try {
-    auth = await requireClerkAuth(context);
+    auth = await requireSupabaseAuth(context);
   } catch (error) {
     if (error instanceof AuthError) {
       return authErrorResponse(error);

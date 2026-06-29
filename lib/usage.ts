@@ -3,7 +3,6 @@ export type AppUserStatus = 'active' | 'disabled';
 
 export type AppUser = {
   id: string;
-  clerkUserId: string;
   email: string | null;
   displayName: string | null;
   locale: string;
@@ -19,13 +18,13 @@ export type AppUser = {
 
 export type UsageReservation = {
   eventId: string;
-  clerkUserId: string;
+  userId: string;
   reservedTokens: number;
   remainingTokens: number;
 };
 
-export type ClerkUserProfile = {
-  clerkUserId: string;
+export type AppUserProfile = {
+  userId: string;
   email?: string | null;
   displayName?: string | null;
   locale?: string | null;
@@ -70,20 +69,21 @@ function pickEnvValue(context: any, key: string) {
 
 function pickNumberEnv(context: any, key: string, fallback: number) {
   const raw = pickEnvValue(context, key);
-  if (!raw) {
-    return fallback;
-  }
+  if (!raw) return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
 function getSupabaseConfig(context?: any) {
-  const url = pickEnvValue(context, 'SUPABASE_URL').replace(/\/+$/g, '');
-  const serviceRoleKey = pickEnvValue(context, 'SUPABASE_SERVICE_ROLE_KEY');
-  if (!url || !serviceRoleKey) {
-    return null;
-  }
-  return { url, serviceRoleKey };
+  const url = (
+    pickEnvValue(context, 'SUPABASE_URL')
+    || pickEnvValue(context, 'NEXT_PUBLIC_SUPABASE_URL')
+  ).replace(/\/+$/g, '');
+  const secretKey = (
+    pickEnvValue(context, 'SUPABASE_SECRET_KEY')
+    || pickEnvValue(context, 'SUPABASE_SERVICE_ROLE_KEY')
+  );
+  return url && secretKey ? { url, secretKey } : null;
 }
 
 export function isUsageDatabaseConfigured(context?: any) {
@@ -95,7 +95,6 @@ function normalizeUser(row: any): AppUser {
   const tokenUsed = Number(row.token_used ?? row.tokenUsed ?? 0);
   return {
     id: String(row.id || ''),
-    clerkUserId: String(row.clerk_user_id ?? row.clerkUserId ?? ''),
     email: row.email ? String(row.email) : null,
     displayName: row.display_name ?? row.displayName ? String(row.display_name ?? row.displayName) : null,
     locale: String(row.locale || 'zh'),
@@ -116,17 +115,19 @@ async function callSupabaseRpc<T>(
   options: SupabaseRpcOptions = {},
 ): Promise<T> {
   const config = getSupabaseConfig(options.context);
-  if (!config) {
-    throw new UsageConfigurationError();
+  if (!config) throw new UsageConfigurationError();
+
+  const headers: Record<string, string> = {
+    apikey: config.secretKey,
+    'content-type': 'application/json',
+  };
+  if (config.secretKey.split('.').length === 3) {
+    headers.authorization = `Bearer ${config.secretKey}`;
   }
 
   const response = await fetch(`${config.url}/rest/v1/rpc/${functionName}`, {
     method: 'POST',
-    headers: {
-      apikey: config.serviceRoleKey,
-      authorization: `Bearer ${config.serviceRoleKey}`,
-      'content-type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -139,19 +140,15 @@ async function callSupabaseRpc<T>(
       response.status,
     );
   }
-
   return payload as T;
 }
 
 function firstRow<T>(payload: T[] | T | null): T | null {
-  if (Array.isArray(payload)) {
-    return payload[0] || null;
-  }
-  return payload || null;
+  return Array.isArray(payload) ? payload[0] || null : payload || null;
 }
 
-export async function ensureAppUserForClerkUser(
-  profile: ClerkUserProfile,
+export async function ensureAppUser(
+  profile: AppUserProfile,
   options: SupabaseRpcOptions = {},
 ): Promise<AppUser> {
   const defaultQuota = pickNumberEnv(options.context, 'DEFAULT_USER_TOKEN_QUOTA', DEFAULT_NEW_USER_QUOTA);
@@ -161,65 +158,56 @@ export async function ensureAppUserForClerkUser(
     DEFAULT_ADMIN_INITIAL_QUOTA,
   );
   const row = firstRow(await callSupabaseRpc<any[]>('app_ensure_user', {
-    p_clerk_user_id: profile.clerkUserId,
+    p_user_id: profile.userId,
     p_email: profile.email || null,
     p_display_name: profile.displayName || null,
     p_locale: profile.locale || 'zh',
     p_default_token_quota: defaultQuota,
     p_admin_initial_token_quota: adminInitialQuota,
   }, options));
-
-  if (!row) {
-    throw new UsagePermissionError('Unable to create or load user.', 500);
-  }
-
+  if (!row) throw new UsagePermissionError('Unable to create or load user.', 500);
   return normalizeUser(row);
 }
 
-export async function getAppUserByClerkUserId(
-  clerkUserId: string,
+export async function getAppUserById(
+  userId: string,
   options: SupabaseRpcOptions = {},
 ): Promise<AppUser | null> {
   const row = firstRow(await callSupabaseRpc<any[]>('app_get_user', {
-    p_clerk_user_id: clerkUserId,
+    p_user_id: userId,
   }, options));
-
   return row ? normalizeUser(row) : null;
 }
 
 export async function listUsersForAdmin(
-  adminClerkUserId: string,
+  adminUserId: string,
   options: SupabaseRpcOptions = {},
 ): Promise<AppUser[]> {
   const rows = await callSupabaseRpc<any[]>('app_list_users', {
-    p_admin_clerk_user_id: adminClerkUserId,
+    p_admin_user_id: adminUserId,
   }, options);
   return (rows || []).map(normalizeUser);
 }
 
 export async function updateUserQuotaForAdmin(
-  adminClerkUserId: string,
+  adminUserId: string,
   targetUserId: string,
   tokenQuota: number,
   status: AppUserStatus,
   options: SupabaseRpcOptions = {},
 ): Promise<AppUser> {
   const row = firstRow(await callSupabaseRpc<any[]>('app_admin_update_user_quota', {
-    p_admin_clerk_user_id: adminClerkUserId,
+    p_admin_user_id: adminUserId,
     p_target_user_id: targetUserId,
     p_token_quota: Math.max(0, Math.floor(tokenQuota)),
     p_status: status,
   }, options));
-
-  if (!row) {
-    throw new UsagePermissionError('Unable to update user quota.', 500);
-  }
-
+  if (!row) throw new UsagePermissionError('Unable to update user quota.', 500);
   return normalizeUser(row);
 }
 
 export async function reserveTokensForRun(
-  clerkUserId: string,
+  userId: string,
   conversationId: string,
   options: SupabaseRpcOptions = {},
 ): Promise<UsageReservation> {
@@ -228,19 +216,17 @@ export async function reserveTokensForRun(
     pickNumberEnv(options.context, 'RUN_TOKEN_RESERVE', DEFAULT_RUN_TOKEN_RESERVE),
   );
   const row = firstRow(await callSupabaseRpc<any[]>('app_reserve_tokens', {
-    p_clerk_user_id: clerkUserId,
+    p_user_id: userId,
     p_tokens: reserveTokens,
     p_conversation_id: conversationId || null,
     p_metadata: { source: 'agent-run' },
   }, options));
-
   if (!row?.allowed) {
     throw new UsagePermissionError(String(row?.reason || 'insufficient_quota'), 403);
   }
-
   return {
     eventId: String(row.event_id),
-    clerkUserId,
+    userId,
     reservedTokens: Number(row.reserved_tokens || reserveTokens),
     remainingTokens: Number(row.remaining_tokens || 0),
   };
@@ -253,25 +239,18 @@ export async function finalizeTokenUsage(
   options: SupabaseRpcOptions = {},
 ): Promise<AppUser> {
   const row = firstRow(await callSupabaseRpc<any[]>('app_finalize_usage', {
-    p_clerk_user_id: reservation.clerkUserId,
+    p_user_id: reservation.userId,
     p_event_id: reservation.eventId,
     p_actual_tokens: Math.max(0, Math.floor(actualTokens)),
     p_metadata: metadata,
   }, options));
-
-  if (!row) {
-    throw new UsagePermissionError('Unable to finalize token usage.', 500);
-  }
-
+  if (!row) throw new UsagePermissionError('Unable to finalize token usage.', 500);
   return normalizeUser(row);
 }
 
 export function estimateTokensFromText(text: string) {
   const normalized = text.replace(/\s+/g, ' ').trim();
-  if (!normalized) {
-    return 1;
-  }
-  return Math.max(1, Math.ceil(normalized.length / 4));
+  return normalized ? Math.max(1, Math.ceil(normalized.length / 4)) : 1;
 }
 
 export function extractUsageTokens(result: {
@@ -279,10 +258,7 @@ export function extractUsageTokens(result: {
   modelUsage?: Record<string, any>;
   result?: string;
 } | null | undefined) {
-  if (!result) {
-    return 0;
-  }
-
+  if (!result) return 0;
   const usage = result.usage || {};
   const direct = [
     usage.inputTokens ?? usage.input_tokens,
@@ -290,12 +266,9 @@ export function extractUsageTokens(result: {
     usage.cacheReadInputTokens ?? usage.cache_read_input_tokens,
     usage.cacheCreationInputTokens ?? usage.cache_creation_input_tokens,
   ].reduce((sum, value) => sum + (Number.isFinite(Number(value)) ? Number(value) : 0), 0);
-  if (direct > 0) {
-    return Math.floor(direct);
-  }
+  if (direct > 0) return Math.floor(direct);
 
-  const modelUsage = result.modelUsage || {};
-  const modelTotal = Object.values(modelUsage).reduce((sum, item: any) => {
+  const modelTotal = Object.values(result.modelUsage || {}).reduce((sum, item: any) => {
     return sum
       + Number(item?.inputTokens || 0)
       + Number(item?.outputTokens || 0)

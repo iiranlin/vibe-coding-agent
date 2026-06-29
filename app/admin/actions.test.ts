@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const actionMocks = vi.hoisted(() => ({
-  auth: vi.fn(),
+  createClient: vi.fn(),
+  getClaims: vi.fn(),
   redirect: vi.fn(),
   revalidatePath: vi.fn(),
   updateUserQuotaForAdmin: vi.fn(),
 }));
 
-vi.mock('@clerk/nextjs/server', () => ({
-  auth: actionMocks.auth,
+vi.mock('../../lib/supabase/server', () => ({
+  createClient: actionMocks.createClient,
 }));
 
 vi.mock('next/cache', () => ({
@@ -28,7 +29,11 @@ import { updateQuotaAction } from './actions';
 describe('updateQuotaAction', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    actionMocks.auth.mockResolvedValue({ userId: 'admin_123' });
+    actionMocks.getClaims.mockResolvedValue({
+      data: { claims: { sub: '96cf1ca3-ac70-480d-a733-00f30c751c05' } },
+      error: null,
+    });
+    actionMocks.createClient.mockResolvedValue({ auth: { getClaims: actionMocks.getClaims } });
     actionMocks.updateUserQuotaForAdmin.mockResolvedValue({});
   });
 
@@ -45,7 +50,7 @@ describe('updateQuotaAction', () => {
 
     await expect(updateQuotaAction(formData)).rejects.toBe(redirectSignal);
     expect(actionMocks.updateUserQuotaForAdmin).toHaveBeenCalledWith(
-      'admin_123',
+      '96cf1ca3-ac70-480d-a733-00f30c751c05',
       '17e0fe25-7549-46c9-92a8-4df1180a9503',
       1000000,
       'active',

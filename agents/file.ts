@@ -1,6 +1,6 @@
 import { runFileReadPipeline } from './_pipelines';
-import { AuthError, authErrorResponse, requireClerkAuth } from './_auth';
-import { ensureAppUserForClerkUser, UsageConfigurationError, UsagePermissionError } from '../lib/usage';
+import { AuthError, authErrorResponse, requireSupabaseAuth } from './_auth';
+import { ensureAppUser, UsageConfigurationError, UsagePermissionError } from '../lib/usage';
 
 function usageErrorResponse(error: unknown) {
   const reason = error instanceof UsageConfigurationError
@@ -20,7 +20,7 @@ function usageErrorResponse(error: unknown) {
 export async function onRequest(context: any) {
   let auth;
   try {
-    auth = await requireClerkAuth(context);
+    auth = await requireSupabaseAuth(context);
   } catch (error) {
     if (error instanceof AuthError) {
       return authErrorResponse(error);
@@ -29,8 +29,8 @@ export async function onRequest(context: any) {
   }
 
   try {
-    const user = await ensureAppUserForClerkUser({
-      clerkUserId: auth.clerkUserId,
+    const user = await ensureAppUser({
+      userId: auth.userId,
       email: auth.email,
       displayName: auth.displayName,
     }, { context });

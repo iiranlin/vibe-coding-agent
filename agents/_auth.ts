@@ -1,9 +1,10 @@
-import { createClerkClient } from '@clerk/backend';
+import { createServerClient } from '@supabase/ssr';
+import { getSupabasePublicConfig } from '../lib/supabase/config';
 
 type HeaderRecord = Record<string, string | string[] | undefined>;
 
-export type ClerkAuthContext = {
-  clerkUserId: string;
+export type SupabaseAuthContext = {
+  supabaseUserId: string;
   systemUserId: string;
   userId: string;
   sessionId?: string | null;
@@ -21,11 +22,6 @@ export class AuthError extends Error {
   }
 }
 
-function pickEnvValue(context: any, key: string) {
-  const value = context?.env?.[key] ?? process.env?.[key];
-  return typeof value === 'string' ? value.trim() : '';
-}
-
 function headerValue(headers: Headers | HeaderRecord | undefined | null, name: string) {
   if (!headers) return '';
   if (typeof (headers as Headers).get === 'function') {
@@ -36,102 +32,75 @@ function headerValue(headers: Headers | HeaderRecord | undefined | null, name: s
   return Array.isArray(value) ? value[0] || '' : value || '';
 }
 
-function normalizeHeaders(headers: Headers | HeaderRecord | undefined | null) {
-  const result = new Headers();
-  if (!headers) return result;
-  if (typeof (headers as Headers).forEach === 'function') {
-    (headers as Headers).forEach((value, key) => result.set(key, value));
-    return result;
-  }
-  for (const [key, value] of Object.entries(headers as HeaderRecord)) {
-    if (Array.isArray(value)) {
-      result.set(key, value.join(', '));
-    } else if (typeof value === 'string') {
-      result.set(key, value);
+function parseCookies(value: string) {
+  if (!value) return [];
+  return value.split(';').flatMap((part) => {
+    const separator = part.indexOf('=');
+    if (separator < 1) return [];
+    const name = part.slice(0, separator).trim();
+    const rawValue = part.slice(separator + 1).trim();
+    try {
+      return [{ name, value: decodeURIComponent(rawValue) }];
+    } catch {
+      return [{ name, value: rawValue }];
     }
-  }
-  return result;
-}
-
-function getRequestUrl(context: any, headers: Headers | HeaderRecord | undefined | null) {
-  const request = context?.request || {};
-  const rawUrl = typeof request.url === 'string'
-    ? request.url
-    : typeof request.rawUrl === 'string'
-      ? request.rawUrl
-      : typeof request.path === 'string'
-        ? request.path
-        : '';
-  if (/^https?:\/\//i.test(rawUrl)) {
-    return rawUrl;
-  }
-
-  const host = headerValue(headers, 'host') || 'localhost';
-  const path = rawUrl.startsWith('/') ? rawUrl : '/';
-  const proto = headerValue(headers, 'x-forwarded-proto') || 'https';
-  return `${proto}://${host}${path}`;
-}
-
-function getSystemUserId(clerkUserId: string) {
-  return `clerk:${clerkUserId}`;
-}
-
-function getPrimaryEmail(user: Awaited<ReturnType<ReturnType<typeof createClerkClient>['users']['getUser']>>) {
-  return user.emailAddresses.find((email) => email.id === user.primaryEmailAddressId)?.emailAddress
-    || user.emailAddresses[0]?.emailAddress
-    || null;
-}
-
-function getDisplayName(user: Awaited<ReturnType<ReturnType<typeof createClerkClient>['users']['getUser']>>) {
-  return user.fullName || user.username || getPrimaryEmail(user) || user.id;
-}
-
-function formatMissingClerkConfigError(missingKeys: string[]) {
-  return `Clerk is not configured. Missing environment variables: ${missingKeys.join(', ')}.`;
-}
-
-export async function requireClerkAuth(context: any): Promise<ClerkAuthContext> {
-  const secretKey = pickEnvValue(context, 'CLERK_SECRET_KEY');
-  const publishableKey = pickEnvValue(context, 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY')
-    || pickEnvValue(context, 'CLERK_PUBLISHABLE_KEY');
-
-  const missingKeys = [
-    ...(!secretKey ? ['CLERK_SECRET_KEY'] : []),
-    ...(!publishableKey ? ['NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY'] : []),
-  ];
-  if (!secretKey || !publishableKey) {
-    throw new AuthError(formatMissingClerkConfigError(missingKeys), 500);
-  }
-
-  const headers = normalizeHeaders(context?.request?.headers);
-  const request = new Request(getRequestUrl(context, context?.request?.headers), {
-    method: typeof context?.request?.method === 'string' ? context.request.method : 'GET',
-    headers,
   });
-  const clerk = createClerkClient({ secretKey, publishableKey });
-  const requestState = await clerk.authenticateRequest(request, {
-    acceptsToken: 'session_token',
-  });
+}
 
-  if (!requestState.isAuthenticated) {
-    throw new AuthError(requestState.reason || 'Authentication required.');
+function getBearerToken(headers: Headers | HeaderRecord | undefined | null) {
+  const authorization = headerValue(headers, 'authorization');
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || '';
+}
+
+function getDisplayName(claims: Record<string, unknown>) {
+  const metadata = claims.user_metadata && typeof claims.user_metadata === 'object'
+    ? claims.user_metadata as Record<string, unknown>
+    : {};
+  const name = metadata.full_name || metadata.name || metadata.display_name;
+  if (typeof name === 'string' && name.trim()) {
+    return name.trim();
+  }
+  return typeof claims.email === 'string' ? claims.email : null;
+}
+
+export async function requireSupabaseAuth(context: any): Promise<SupabaseAuthContext> {
+  let config;
+  try {
+    config = getSupabasePublicConfig(context);
+  } catch (error) {
+    throw new AuthError(error instanceof Error ? error.message : 'Supabase Auth is not configured.', 500);
   }
 
-  const auth = requestState.toAuth();
-  if (!auth.isAuthenticated || !auth.userId) {
+  const requestHeaders = context?.request?.headers;
+  const cookies = parseCookies(headerValue(requestHeaders, 'cookie'));
+  const supabase = createServerClient(config.url, config.publishableKey, {
+    cookies: {
+      getAll() {
+        return cookies;
+      },
+      setAll() {
+        // Agent responses do not own the browser session; Next.js Proxy refreshes it.
+      },
+    },
+  });
+  const bearerToken = getBearerToken(requestHeaders);
+  const { data, error } = bearerToken
+    ? await supabase.auth.getClaims(bearerToken)
+    : await supabase.auth.getClaims();
+  const claims = data?.claims as Record<string, unknown> | undefined;
+  const userId = typeof claims?.sub === 'string' ? claims.sub : '';
+  if (error || !userId) {
     throw new AuthError('Authentication required.');
   }
 
-  const clerkUser = await clerk.users.getUser(auth.userId);
-  const systemUserId = getSystemUserId(auth.userId);
   return {
-    clerkUserId: auth.userId,
-    systemUserId,
-    // Kept for existing callers; this is currently the Clerk user id.
-    userId: auth.userId,
-    sessionId: auth.sessionId,
-    email: getPrimaryEmail(clerkUser),
-    displayName: getDisplayName(clerkUser),
+    supabaseUserId: userId,
+    systemUserId: `supabase:${userId}`,
+    userId,
+    sessionId: typeof claims.session_id === 'string' ? claims.session_id : null,
+    email: typeof claims.email === 'string' ? claims.email : null,
+    displayName: getDisplayName(claims),
   };
 }
 
