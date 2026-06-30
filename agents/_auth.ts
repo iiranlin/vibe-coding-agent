@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { getSupabasePublicConfig } from '../lib/supabase/config';
+import { authOnlyRealtimeOptions } from '../lib/supabase/realtime';
 
 type HeaderRecord = Record<string, string | string[] | undefined>;
 
@@ -75,6 +76,7 @@ export async function requireSupabaseAuth(context: any): Promise<SupabaseAuthCon
   const requestHeaders = context?.request?.headers;
   const cookies = parseCookies(headerValue(requestHeaders, 'cookie'));
   const supabase = createServerClient(config.url, config.publishableKey, {
+    realtime: authOnlyRealtimeOptions,
     cookies: {
       getAll() {
         return cookies;
