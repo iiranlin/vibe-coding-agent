@@ -1,6 +1,7 @@
 'use client';
 
-import { FormEvent, memo, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../agents/utils/_text';
@@ -168,6 +169,7 @@ const TRANSLATIONS = {
       signInToBuild: '登录后构建',
       signInRequired: '请先登录后再使用 AI 构建功能。',
       signedOutHint: '登录后即可构建项目、查看预览和浏览沙箱文件。',
+      signedInSuccess: '登录成功。',
       admin: '管理',
       signOut: '退出',
     },
@@ -283,6 +285,7 @@ const TRANSLATIONS = {
       signInToBuild: 'Sign in to build',
       signInRequired: 'Please sign in before using the AI build workflow.',
       signedOutHint: 'Sign in to build projects, view previews, and browse sandbox files.',
+      signedInSuccess: 'Signed in successfully.',
       admin: 'Admin',
       signOut: 'Sign out',
     },
@@ -396,6 +399,8 @@ type TimelineCopy = UiCopy['timeline'];
 type FileCopy = UiCopy['files'];
 
 const CONVERSATION_STORAGE_KEY = 'web-dev-agent-conversation-id';
+const AUTH_REDIRECT_STATUS_PARAM = 'auth';
+const AUTH_REDIRECT_SUCCESS_VALUE = 'success';
 
 function createConversationId() {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -442,6 +447,30 @@ function sanitizeThinkingContent(value: string) {
     .replace(/<t(?:h(?:i(?:n(?:k(?:\b[^>]*)?)?)?)?)?$/i, '');
 }
 
+function AuthRedirectHandler({ onAuthSuccess }: { onAuthSuccess: () => void }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const authStatus = searchParams.get(AUTH_REDIRECT_STATUS_PARAM);
+  const searchParamsString = searchParams.toString();
+
+  useEffect(() => {
+    if (authStatus !== AUTH_REDIRECT_SUCCESS_VALUE) {
+      return;
+    }
+
+    onAuthSuccess();
+    router.refresh();
+
+    const nextParams = new URLSearchParams(searchParamsString);
+    nextParams.delete(AUTH_REDIRECT_STATUS_PARAM);
+    const nextQuery = nextParams.toString();
+    router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
+  }, [authStatus, onAuthSuccess, pathname, router, searchParamsString]);
+
+  return null;
+}
+
 function getAssistantScrollSignature(message: ChatMessage) {
   const events = message.processEvents ?? [];
   const processSignature = events.map((event) =>
@@ -459,6 +488,7 @@ function getAssistantScrollSignature(message: ChatMessage) {
 
 export default function Home() {
   const [authStatus, setAuthStatus] = useState<'loading' | 'signed-in' | 'signed-out'>('loading');
+  const [authNotice, setAuthNotice] = useState<'signed-in' | null>(null);
   const [language, setLanguage] = useState<Locale>('zh');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -499,6 +529,32 @@ export default function Home() {
     ? getAssistantScrollSignature(latestAssistantMessage)
     : '';
 
+  const refreshAuthSession = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const response = await fetch('/auth/session', { credentials: 'include', cache: 'no-store', signal });
+      const session = await response.json() as { signedIn?: boolean };
+      if (signal?.aborted) {
+        return;
+      }
+      const nextStatus = session.signedIn ? 'signed-in' : 'signed-out';
+      setAuthStatus(nextStatus);
+      if (nextStatus === 'signed-out') {
+        setAuthNotice(null);
+      }
+    } catch {
+      if (!signal?.aborted) {
+        setAuthStatus('signed-out');
+        setAuthNotice(null);
+      }
+    }
+  }, []);
+
+  const handleAuthSuccess = useCallback(() => {
+    setAuthNotice('signed-in');
+    setAuthStatus('signed-in');
+    void refreshAuthSession();
+  }, [refreshAuthSession]);
+
   useEffect(() => {
     const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
     if (stored === 'zh' || stored === 'en') {
@@ -511,23 +567,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    let active = true;
-    fetch('/auth/session', { credentials: 'include', cache: 'no-store' })
-      .then(async (response) => response.json() as Promise<{ signedIn?: boolean }>)
-      .then((session) => {
-        if (active) {
-          setAuthStatus(session.signedIn ? 'signed-in' : 'signed-out');
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setAuthStatus('signed-out');
-        }
-      });
+    const controller = new AbortController();
+    void refreshAuthSession(controller.signal);
     return () => {
-      active = false;
+      controller.abort();
     };
-  }, []);
+  }, [refreshAuthSession]);
 
   useEffect(() => {
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
@@ -1017,6 +1062,9 @@ export default function Home() {
 
   return (
     <main className="min-h-screen overflow-hidden bg-[#0a0d0b] text-white">
+      <Suspense fallback={null}>
+        <AuthRedirectHandler onAuthSuccess={handleAuthSuccess} />
+      </Suspense>
       <nav className="fixed inset-x-0 top-0 z-50 px-4">
         <div className="mx-auto flex h-14 items-center justify-between gap-3">
           <div className="min-w-0 text-sm font-semibold tracking-[0.06em] text-[#dff8ef] sm:text-base">
@@ -1085,6 +1133,11 @@ export default function Home() {
             <p className="mt-7 text-[clamp(0.95rem,1.15vw,1.25rem)] font-semibold text-[#b5c4be]">
               {t.home.subtitle}
             </p>
+            {authNotice === 'signed-in' && (
+              <p role="status" className="mt-3 text-sm font-semibold text-[#9ff0cf]">
+                {t.auth.signedInSuccess}
+              </p>
+            )}
             {requiresSignIn && (
               <p className="mt-3 text-sm font-medium text-[#f2c779]">
                 {t.auth.signedOutHint}

@@ -1,5 +1,6 @@
 'use server';
 
+import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
@@ -53,7 +54,8 @@ export async function signIn(
     return failure('邮箱或密码不正确。');
   }
 
-  redirect('/');
+  revalidatePath('/');
+  redirect('/?auth=success');
 }
 
 export async function signUp(
@@ -136,5 +138,6 @@ export async function updatePassword(
 export async function signOut() {
   const supabase = await createClient();
   await supabase.auth.signOut();
+  revalidatePath('/');
   redirect('/');
 }
