@@ -16,6 +16,7 @@ describe('updateSession', () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it('validates the JWT and forwards refreshed cookies', async () => {
@@ -38,5 +39,28 @@ describe('updateSession', () => {
     expect(mocks.getClaims).toHaveBeenCalledOnce();
     expect(response.cookies.get('sb-project-auth-token')?.value).toBe('refreshed');
     expect(response.headers.get('x-supabase-auth')).toBe('refreshed');
+  });
+
+  it('provides a Realtime transport when the server runtime has no WebSocket', async () => {
+    vi.stubEnv('SUPABASE_URL', 'https://project.supabase.co');
+    vi.stubEnv('SUPABASE_PUBLISHABLE_KEY', 'sb_publishable_test');
+    vi.stubGlobal('WebSocket', undefined);
+    mocks.getClaims.mockResolvedValue({ data: { claims: null } });
+    mocks.createServerClient.mockImplementation((_url, _key, options) => ({
+      auth: { getClaims: mocks.getClaims },
+      realtimeTransport: options.realtime?.transport,
+    }));
+
+    await updateSession(new NextRequest('https://code.example.com/'));
+
+    expect(mocks.createServerClient).toHaveBeenCalledWith(
+      'https://project.supabase.co',
+      'sb_publishable_test',
+      expect.objectContaining({
+        realtime: {
+          transport: expect.any(Function),
+        },
+      }),
+    );
   });
 });
