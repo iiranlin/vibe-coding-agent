@@ -9,6 +9,7 @@ import { createClient } from '../../lib/supabase/server';
 export type AuthActionState = {
   ok: boolean;
   message: string;
+  redirectTo?: string;
 };
 
 const emailSchema = z.string().trim().email('请输入有效的邮箱地址。');
@@ -55,7 +56,11 @@ export async function signIn(
   }
 
   revalidatePath('/');
-  redirect('/?auth=success');
+  return {
+    ok: true,
+    message: '登录成功。',
+    redirectTo: '/?auth=success',
+  };
 }
 
 export async function signUp(
