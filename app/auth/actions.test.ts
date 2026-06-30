@@ -46,7 +46,7 @@ describe('Supabase auth actions', () => {
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it('validates credentials before calling Supabase', async () => {
@@ -56,18 +56,27 @@ describe('Supabase auth actions', () => {
     expect(mocks.createClient).not.toHaveBeenCalled();
   });
 
-  it('signs in with email and password then redirects home', async () => {
+  it('signs in with email and password then returns a client redirect state', async () => {
     const signInWithPassword = vi.fn().mockResolvedValue({ error: null });
     mocks.createClient.mockResolvedValue({ auth: { signInWithPassword } });
+    const redirectSignal = new Error('NEXT_REDIRECT');
+    mocks.redirect.mockImplementation(() => {
+      throw redirectSignal;
+    });
 
-    await signIn(undefined, credentials());
+    const result = await signIn(undefined, credentials());
 
     expect(signInWithPassword).toHaveBeenCalledWith({
       email: 'ada@example.com',
       password: 'correct-horse-battery',
     });
     expect(mocks.revalidatePath).toHaveBeenCalledWith('/');
-    expect(mocks.redirect).toHaveBeenCalledWith('/?auth=success');
+    expect(mocks.redirect).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      message: '登录成功。',
+      redirectTo: '/?auth=success',
+    });
   });
 
   it('uses the PKCE callback for email confirmation', async () => {

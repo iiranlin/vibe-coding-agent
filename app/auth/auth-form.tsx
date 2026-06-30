@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useActionState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useActionState, useEffect } from 'react';
 import {
   requestPasswordReset,
   signIn,
@@ -53,12 +54,19 @@ const ACTIONS = {
 
 export function AuthForm({ mode }: { mode: AuthMode }) {
   const copy = COPY[mode];
+  const router = useRouter();
   const [state, action, pending] = useActionState<AuthActionState | undefined, FormData>(
     ACTIONS[mode],
     undefined,
   );
   const needsEmail = mode !== 'update-password';
   const needsPassword = mode !== 'forgot-password';
+
+  useEffect(() => {
+    if (mode === 'sign-in' && state?.ok && state.redirectTo) {
+      router.push(state.redirectTo);
+    }
+  }, [mode, router, state?.ok, state?.redirectTo]);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#0a0d0b] px-4 py-12 text-[#ecf8f2]">
