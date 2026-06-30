@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   createClient: vi.fn(),
   redirect: vi.fn(),
+  revalidatePath: vi.fn(),
   headers: vi.fn(),
 }));
 
@@ -12,6 +13,10 @@ vi.mock('../../lib/supabase/server', () => ({
 
 vi.mock('next/navigation', () => ({
   redirect: mocks.redirect,
+}));
+
+vi.mock('next/cache', () => ({
+  revalidatePath: mocks.revalidatePath,
 }));
 
 vi.mock('next/headers', () => ({
@@ -61,7 +66,8 @@ describe('Supabase auth actions', () => {
       email: 'ada@example.com',
       password: 'correct-horse-battery',
     });
-    expect(mocks.redirect).toHaveBeenCalledWith('/');
+    expect(mocks.revalidatePath).toHaveBeenCalledWith('/');
+    expect(mocks.redirect).toHaveBeenCalledWith('/?auth=success');
   });
 
   it('uses the PKCE callback for email confirmation', async () => {
